@@ -1,0 +1,22 @@
+# 本地状态 / 密钥（切勿提交）
+.env
+.env.*
+!.env.example
+dry_run_bankroll.json
+.history/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# 工具 / IDE
+.idea/
+.vscode/
+*.log

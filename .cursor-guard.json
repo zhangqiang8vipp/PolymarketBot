@@ -1,0 +1,47 @@
+{
+  "protect": [
+    "src/**",
+    "lib/**",
+    "*.config.js",
+    "*.config.ts",
+    "package.json",
+    "tsconfig.json",
+    ".env.example"
+  ],
+  "ignore": [
+    "node_modules/**",
+    "dist/**",
+    "build/**",
+    ".next/**",
+    "coverage/**",
+    "*.log",
+    "*.tmp",
+    ".cursor-guard-backup/**"
+  ],
+  "backup_strategy": "git",
+  "auto_backup_interval_seconds": 60,
+  "secrets_patterns_extra": [],
+  "pre_restore_backup": "always",
+  "retention": {
+    "mode": "days",
+    "days": 30,
+    "max_count": 100,
+    "max_size_mb": 500
+  },
+  "git_retention": {
+    "enabled": false,
+    "mode": "count",
+    "days": 30,
+    "max_count": 200
+  },
+  "proactive_alert": true,
+  "alert_thresholds": {
+    "files_per_window": 20,
+    "window_seconds": 10,
+    "cooldown_seconds": 60
+  },
+  "enable_pre_warning": false,
+  "pre_warning_threshold": 30,
+  "pre_warning_mode": "popup",
+  "pre_warning_exclude_patterns": []
+}
