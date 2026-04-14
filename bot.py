@@ -349,8 +349,8 @@ def get_best_ask(token_id: str, client: Optional[Any]) -> Optional[float]:
 
 
 def _direction_orderbook_max_sum() -> Optional[float]:
-    """DIRECTION_ORDERBOOK_MAX_SUM=1.05：双边卖一合计大于该值则不做方向单（防「1.98 还送钱」）。"""
-    raw = os.environ.get("DIRECTION_ORDERBOOK_MAX_SUM", "").strip()
+    """高胜率默认=1.05：双边卖一合计 >1.05 → 不做方向单（防盘口已贵仍赌方向）。"""
+    raw = os.environ.get("DIRECTION_ORDERBOOK_MAX_SUM", "1.05").strip()
     if not raw:
         return None
     try:
@@ -399,17 +399,28 @@ def _use_book_ask_for_entry() -> bool:
 
 
 def _min_decision_confidence() -> float:
-    """MIN_DECISION_CONFIDENCE=0.2：仅 DIRECTION_STRATEGY=ta 时，低于则跳过（反转模式用合成置信度）。"""
-    raw = os.environ.get("MIN_DECISION_CONFIDENCE", "").strip()
+    """高胜率默认=0.30：DIRECTION_STRATEGY=ta 时置信度低于此跳过。"""
+    raw = os.environ.get("MIN_DECISION_CONFIDENCE", "0.30").strip()
     if not raw:
-        return 0.0
+        return 0.30
     try:
         return max(0.0, min(1.0, float(raw)))
     except ValueError:
+        return 0.30
+
+
+def _min_abs_score() -> float:
+    """
+    MIN_ABS_SCORE：最低 |score| 要求；低于此值无论置信度都跳过。
+    高胜率默认=2.0（窗口偏离 + 微动量都弱时不交易）。
+    """
+    raw = os.environ.get("MIN_ABS_SCORE", "2.0").strip()
+    if not raw:
         return 0.0
-
-
-def _spike_jump() -> float:
+    try:
+        return max(0.0, float(raw))
+    except ValueError:
+        return 2.0
     """SPIKE_JUMP：尖峰阈值；设为 999 等可实质关闭尖峰提前下单。"""
     raw = os.environ.get("SPIKE_JUMP", "").strip()
     if not raw:
@@ -544,17 +555,24 @@ def decide_from_imbalance(imb_up: float, imb_down: float, threshold: float) -> i
     return 0
 
 
-def estimate_fair_prob(window_open: float, current_price: float) -> float:
-    """用 (现价-开盘)/开盘 经 sigmoid 得「涨」概率估计 ∈(0,1)。"""
-    if window_open <= 0 or current_price <= 0:
-        return 0.5
-    pct = (current_price - window_open) / window_open
-    try:
-        scale = float(os.environ.get("FAIR_PROB_SIGMOID_SCALE", "50").strip())
-    except ValueError:
-        scale = 50.0
-    scale = max(1.0, min(scale, 500.0))
-    return 1.0 / (1.0 + math.exp(-pct * scale))
+def estimate_fair_prob(confidence: float, direction: int) -> float:
+    """
+    用策略 confidence 作为概率基准，结合方向计算合理概率。
+
+    confidence ∈ [0,1]，来自 analyze() 的 TA 信号强度。
+    direction=1（预测 Up）：fair_prob 随 confidence 升高 → Up 概率更大
+    direction=-1（预测 Down）：fair_prob = 1 - confidence（反向）
+
+    避免使用窗口内价格变动（循环论证）。
+    """
+    c = max(0.0, min(1.0, float(confidence)))
+    if direction == 1:
+        # confidence 高 → TA 看好 Up → fair 偏向 >0.5
+        # 范围：0.5（无信号）~ 0.95（最强 Up 信号）
+        return 0.5 + 0.45 * c
+    else:
+        # 预测 Down，fair 偏向 <0.5
+        return 0.5 - 0.45 * c
 
 
 def has_price_edge(
@@ -1010,15 +1028,19 @@ def resolve_window_direction_with_meta(
     """
     返回 (涨跌结果 1=Up, -1=Down, meta)。
     meta 含 settle_method、用到的 open/close、缺失原因与 RTDS 诊断，便于日志与训练落盘。
+
+    结算优先级（高胜率配置）：
+    1. DRY_RUN_BINANCE_SETTLE=1 → 仅 Binance K 线（最可靠，推荐干跑）
+    2. 默认：RTDS 开盘价参考 + Binance 收盘价判定（避免 RTDS 收盘 tick 缺失）
     """
     meta: dict[str, Any] = {"window_ts": window_ts}
-    if dry_run and os.environ.get("DRY_RUN_BINANCE_SETTLE", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
+    close_boundary_s = window_ts + WINDOW
+
+    # 路径 A：强制 Binance 结算（干跑推荐，稳定可靠）
+    if dry_run and os.environ.get("DRY_RUN_BINANCE_SETTLE", "1").strip().lower() in (
+        "1", "true", "yes", "on",
     ):
-        print("[结算] 干跑 DRY_RUN_BINANCE_SETTLE：仅用 Binance K 线判定涨跌", flush=True)
+        print("[结算] Binance 结算（DRY_RUN_BINANCE_SETTLE=1）", flush=True)
         bo, bc = _binance_window_edge_prices(window_ts)
         meta["settle_method"] = "binance_klines_only"
         meta["binance_open"] = bo
@@ -1028,149 +1050,87 @@ def resolve_window_direction_with_meta(
         meta["missing"] = []
         return (1 if bc >= bo else -1), meta
 
-    close_boundary_s = window_ts + WINDOW
+    # 路径 B：混合模式（RTDS 开盘参考 + Binance 收盘判定）
+    # 开盘价：优先 RTDS（与 Polymarket Price to beat 对齐），失败则 Binance
     if feed is not None:
         open_px, open_how = _chainlink_window_open_px(feed, window_ts)
-        close_px = feed.first_price_at_or_after(close_boundary_s)
-        if close_px is None:
-            try:
-                close_wait = float(os.environ.get("CHAINLINK_CLOSE_WAIT_S", "120"))
-                if dry_run:
-                    # 默认 90s：Chainlink 收盘 tick 常晚于边界；过小易误落 Binance（你日志里缓冲已早 200s+ 则另见下方诊断）
-                    cap = float(os.environ.get("DRY_RUN_CHAINLINK_CLOSE_WAIT_S", "90"))
-                    close_wait = min(close_wait, max(0.5, cap))
-                print(
-                    f"[结算] Chainlink 尚无窗口收盘边界({close_boundary_s})后 tick，"
-                    f"轮询等待至多 {close_wait:g}s…",
-                    flush=True,
-                )
-                close_px = feed.wait_first_price_at_or_after(close_boundary_s, timeout_s=close_wait)
-            except TimeoutError:
-                print(
-                    "[结算] Chainlink 收盘 tick 等待超时，将回退 Binance K 线",
-                    flush=True,
-                )
-                close_px = None
-        meta["open_rtds"] = open_px
-        meta["open_how"] = open_how
-        meta["close_rtds"] = close_px
-        if open_px is not None and close_px is not None:
-            meta["settle_method"] = "rtds_chainlink"
-            meta["open_used"] = float(open_px)
-            meta["close_used"] = float(close_px)
-            return (1 if close_px >= open_px else -1), meta
+    else:
+        open_px = None
+        open_how = "未接 RTDS"
 
-        missing: List[str] = []
-        if open_px is None:
-            missing.append("open_chainlink(窗口起点无≥边界的 tick 且无可用回补)")
-        if close_px is None:
-            missing.append(
-                f"close_chainlink(窗口收盘边界={close_boundary_s} 后无 tick 或等待超时)"
-            )
-        meta["missing"] = missing
-        diag_o = ""
-        diag_c = ""
-        if hasattr(feed, "diagnose_rtds_open_buffer"):
-            try:
-                diag_o = str(feed.diagnose_rtds_open_buffer(window_ts))
-                diag_c = str(feed.diagnose_rtds_open_buffer(close_boundary_s))
-            except Exception as e:
-                diag_c = f"诊断异常:{e}"
-        meta["diagnostic_open_boundary"] = diag_o
-        meta["diagnostic_close_boundary"] = diag_c
-        stats = getattr(feed, "buffer_stats", None)
-        if callable(stats):
-            try:
-                meta["buffer_stats"] = stats()
-            except Exception:
-                pass
-        if hasattr(feed, "ws_health_summary"):
-            try:
-                meta["ws_health"] = feed.ws_health_summary()
-                if hasattr(feed, "ws_health_line"):
-                    meta["ws_health_line"] = feed.ws_health_line()
-            except Exception:
-                pass
-        buf = meta.get("buffer_stats")
-        buf_s = (
-            f"tick={buf[0]} ts_ms∈[{buf[1]},{buf[2]}] latest={buf[3]}"
-            if isinstance(buf, tuple) and buf and buf[0]
-            else f"tick={buf[0] if buf else '?'}"
-        )
-        ws_line = ""
-        if hasattr(feed, "ws_health_line"):
-            try:
-                ws_line = "\n  WS 链路: " + str(feed.ws_health_line())
-            except Exception as e:
-                ws_line = f"\n  WS 链路: (诊断失败:{e})"
-        timeline_note = ""
-        if (
-            isinstance(buf, tuple)
-            and len(buf) >= 3
-            and buf[2] is not None
-            and int(buf[0]) > 0
-        ):
-            close_ms = int(close_boundary_s) * 1000
-            mx_ts = int(buf[2])
-            if mx_ts < close_ms:
-                gap_s = (close_ms - mx_ts) / 1000.0
-                past_close_s = now() - float(close_boundary_s)
-                meta["latest_payload_before_close_boundary_s"] = gap_s
-                meta["wall_seconds_after_close_boundary"] = past_close_s
-                timeline_note = (
-                    f"\n  时间轴解读: 缓冲内「最新 payload 时间戳」比收盘边界早约 {gap_s:.0f}s；"
-                    f"本机 wall 已过收盘边界约 {past_close_s:.0f}s。\n"
-                    f"  含义: 这段时间内未收到 timestamp≥收盘边界的 Chainlink 更新（WS 断流、本机休眠、或 RTDS 暂停推送时常见）。\n"
-                    f"  若 gap 远大于 DRY_RUN_CHAINLINK_CLOSE_WAIT_S，单纯「加长等待」仍等不到 tick；"
-                    "应查 RTDS_DEBUG、网络/防火墙、或 DRY_RUN_BINANCE_SETTLE=1 接受 Binance 结算。\n"
-                )
-        bo_fb, bc_fb = _binance_window_edge_prices(window_ts)
-        d_fb = 1 if bc_fb >= bo_fb else -1
-        meta["settle_method"] = "binance_klines_fallback"
-        meta["binance_open"] = bo_fb
-        meta["binance_close"] = bc_fb
-        # 回退时输赢**只**看 Binance 窗口首尾；勿与上方 RTDS 快照混为一谈（后者可能陈旧或未覆盖收盘）
-        meta["open_used"] = bo_fb
-        meta["close_used"] = bc_fb
-        verdict = "Up(涨)" if d_fb == 1 else "Down(跌)"
-        print(
-            "[结算] RTDS Chainlink 不足以做本窗口 oracle 结算 → 改用 **Binance K 线首尾** 判定涨跌。\n"
-            f"  **实际用于输赢**: Binance open={bo_fb:.2f} close={bc_fb:.2f} → {verdict}\n"
-            f"  RTDS 快照(未参与比对或残缺): open_rtds={open_px!s} close_rtds={close_px!s}\n"
-            f"  缺失: {'；'.join(missing)}\n"
-            f"  缓冲: {buf_s}\n"
-            f"{ws_line}\n"
-            f"  起点边界诊断: {diag_o or '(无)'}\n"
-            f"  收盘边界诊断: {diag_c or '(无)'}\n"
-            f"{timeline_note}"
-            "  修复建议: 仍无包时重启 bot 以重建 WS；检查 POLY_RTDS_WS；"
-            "增大 RTDS_BUFFER_WAIT_S / DRY_RUN_CHAINLINK_CLOSE_WAIT_S（仅对「晚到但会到」的包有效）；"
-            "DRY_RUN_BINANCE_SETTLE=1 强制 Binance；RTDS_FALLBACK_DEBUG=1 看开盘价侧。",
-            flush=True,
-        )
-        log.warning(
-            "settle_fallback_binance window=%s adjudicate_binance open=%.2f close=%.2f -> %s "
-            "rtds_snap_open=%s rtds_snap_close=%s missing=%s buf=%s",
-            window_ts,
-            bo_fb,
-            bc_fb,
-            verdict,
-            open_px,
-            close_px,
-            missing,
-            buf_s,
-        )
-        return d_fb, meta
+    # 收盘价：Binance（RTDS 收盘 tick 常因 WS 延迟缺失，Binance 最可靠）
+    bo_fb, bc_fb = _binance_window_edge_prices(window_ts)
+    close_rtds: Optional[float] = None
+    if feed is not None:
+        try:
+            close_rtds = feed.first_price_at_or_after(close_boundary_s)
+        except Exception:
+            pass
 
-    bo, bc = _binance_window_edge_prices(window_ts)
-    meta["settle_method"] = "binance_klines_fallback"
-    meta["binance_open"] = bo
-    meta["binance_close"] = bc
-    meta["open_used"] = bo
-    meta["close_used"] = bc
-    meta["missing"] = []
-    d = 1 if bc >= bo else -1
-    return d, meta
+    meta["open_rtds"] = open_px
+    meta["open_how"] = open_how
+    meta["close_rtds"] = close_rtds
+
+    d_fb = 1 if bc_fb >= bo_fb else -1
+    verdict_cn = "Up(涨)" if d_fb == 1 else "Down(跌)"
+
+    # 诊断信息
+    diag_o = ""
+    diag_c = ""
+    if feed is not None and hasattr(feed, "diagnose_rtds_open_buffer"):
+        try:
+            diag_o = str(feed.diagnose_rtds_open_buffer(window_ts))
+            diag_c = str(feed.diagnose_rtds_open_buffer(close_boundary_s))
+        except Exception as e:
+            diag_c = f"诊断异常:{e}"
+    meta["diagnostic_open_boundary"] = diag_o
+    meta["diagnostic_close_boundary"] = diag_c
+
+    stats = getattr(feed, "buffer_stats", None) if feed else None
+    if callable(stats):
+        try:
+            meta["buffer_stats"] = stats()
+        except Exception:
+            pass
+
+    if feed is not None and hasattr(feed, "ws_health_line"):
+        try:
+            meta["ws_health_line"] = feed.ws_health_line()
+        except Exception:
+            pass
+
+    buf = meta.get("buffer_stats")
+    buf_s = (
+        f"tick={buf[0]} ts_ms∈[{buf[1]},{buf[2]}] latest={buf[3]}"
+        if isinstance(buf, tuple) and buf and buf[0]
+        else f"tick={buf[0] if buf else '?'}"
+    )
+
+    missing: List[str] = []
+    if open_px is None:
+        missing.append("open_chainlink(窗口起点无≥边界的 tick)")
+    if close_rtds is None:
+        missing.append("close_chainlink(收盘边界后无 RTDS tick)")
+
+    meta["settle_method"] = "binance_close_rtds_open"
+    meta["binance_open"] = bo_fb
+    meta["binance_close"] = bc_fb
+    meta["open_used"] = float(open_px) if open_px is not None else bo_fb
+    meta["close_used"] = bc_fb
+    meta["missing"] = missing
+
+    print(
+        f"[结算] Binance 收盘={bc_fb:.2f} vs 开={bo_fb:.2f} → {verdict_cn} "
+        f"| RTDS 开={open_px}（{open_how}）| RTDS 收盘={close_rtds} "
+        f"| 缺失: {'；'.join(missing) if missing else '无'}",
+        flush=True,
+    )
+    log.warning(
+        "settle_mixed window=%s binance open=%.2f close=%.2f -> %s "
+        "rtds_open=%s rtds_close=%s missing=%s buf=%s",
+        window_ts, bo_fb, bc_fb, verdict_cn, open_px, close_rtds, missing, buf_s,
+    )
+    return d_fb, meta
 
 
 def resolve_window_direction(
@@ -1296,10 +1256,14 @@ _settlement_feed_cell: List[Optional[Any]] = [None]
 
 
 def min_confidence_for_mode(mode: str) -> float:
+    """
+    高胜率配置：提高各模式最低置信度门槛。
+    safe/aggressive 大幅提高，degen 维持 0（但建议用 safe）。
+    """
     if mode == "safe":
-        return 0.30
+        return 0.45
     if mode == "aggressive":
-        return 0.20
+        return 0.35
     return 0.0
 
 
@@ -1376,9 +1340,8 @@ def snipe_loop(
     ss = _snipe_start_s()
     src = _snipe_price_source()
     print(
-        f"[狙击] 提前秒数(snipe_start_s)={ss} 现价来源={src}；"
-        f"{_rtds_snipe_status_suffix(chainlink_feed)}；"
-        "oracle 现价：有 RTDS 最新价则用 Chainlink，否则 Binance ticker",
+        f"[狙击] 狙击提前{ss}s | 现价={src} | {rtds_sfx} | "
+        f"最低置信度={min_confidence_for_mode(mode):.2f}",
         flush=True,
     )
     min_conf = min_confidence_for_mode(mode)
@@ -1397,11 +1360,7 @@ def snipe_loop(
             continue
         if not snipe_armed:
             snipe_armed = True
-            print(
-                f"[狙击] 已进入狙击阶段 距收盘≈{t_left:.1f}s "
-                f"（约每 {POLL:g}s 拉 K 线+analyse；模式最低置信度={min_conf:.2f}）",
-                flush=True,
-            )
+            print(f"[狙击] → 狙击开始，距收盘 {t_left:.1f}s", flush=True)
         px = snipe_current_price(chainlink_feed)
         ticks.append(px)
         if arb_hit is not None and arb_hit.is_set():
@@ -1411,16 +1370,15 @@ def snipe_loop(
             try:
                 candles = fetch_recent_candles_1m(60)
                 break
-            except (requests.RequestException, OSError) as e:
+            except (requests.RequestException, OSError):
                 if attempt >= 4:
                     raise
-                wait = 1.0 + float(attempt)
-                print(f"[狙击] 拉取 1m K 线失败（{e!s}），{wait:.1f}s 后重试 ({attempt + 1}/5)")
-                time.sleep(wait)
+                time.sleep(1.0 + float(attempt))
         res = analyze(window_open, px, candles, tick_prices=ticks[-120:])
         if best is None or abs(res.score) > abs(best.score):
             best = res
         if last_score is not None and abs(res.score - last_score) >= _spike_jump():
+            print(f"[狙击] 尖峰！Δ={res.score - last_score:.2f}，提前发射", flush=True)
             return res, ticks
         if res.confidence >= min_conf:
             return res, ticks
@@ -1429,19 +1387,15 @@ def snipe_loop(
     if best is None:
         px = snipe_current_price(chainlink_feed)
         ticks.append(px)
-        candles2: List[Candle] = []
         for attempt in range(5):
             try:
                 candles2 = fetch_recent_candles_1m(60)
                 break
-            except (requests.RequestException, OSError) as e:
+            except (requests.RequestException, OSError):
                 if attempt >= 4:
                     raise
-                wait = 1.0 + float(attempt)
-                print(f"[狙击] 拉取 1m K 线失败（{e!s}），{wait:.1f}s 后重试 ({attempt + 1}/5)")
-                time.sleep(wait)
+                time.sleep(1.0 + float(attempt))
         best = analyze(window_open, px, candles2, tick_prices=ticks)
-    # 因距收盘过近退出时：若从未达到「置信度≥模式最低」，不得用 best 强行下单（否则与 safe/aggressive 语义矛盾）。
     if best.confidence < min_conf:
         det = dict(best.details)
         det["skip_trade"] = True
@@ -1469,40 +1423,35 @@ def run_trade_cycle(
     close_at = window_ts + WINDOW
     slug = window_slug(window_ts)
     up_tid, down_tid = parse_gamma_tokens(slug)
-    poll_pre = _arbitrage_poll_interval_s()
+
     print(
-        f"[周期] 开始 window_ts={window_ts} slug={slug} "
-        f"dry_run={dry_run} client={'已连接' if client is not None else '无'} "
-        f"套利_POLL_S={poll_pre:g} 套利日志={_enable_arbitrage_log()} 套利实盘开关={_enable_arbitrage_trade()}",
-        flush=True,
+        f"[======== 窗口 {window_ts} ========]",
+        f"slug={slug} | dry_run={dry_run} | client={'有' if client else '无'}",
+        f"狙击提前={_snipe_start_s()}s | 最低置信={min_confidence_for_mode(mode):.2f}",
+        f"套利={_enable_arbitrage_log()}",
+        sep="\n  ", flush=True,
     )
+
+    # ── 套利探测（周期开头）───────────────────────────────
     if log_up_down_ask_spread(window_ts, up_tid, down_tid, client, dry_run, state):
         return
+
+    # ── 开盘价 ──────────────────────────────────────
     try:
         window_open, open_how = window_open_oracle(window_ts, chainlink_feed)
     except Exception as e:
-        print(
-            f"[ERROR] 获取开盘价失败（多为 Binance REST/代理断连，已加重试仍失败）：{e}\n"
-            "可设 BINANCE_HTTP_RETRIES、BINANCE_REST_BASE_FALLBACKS 或检查系统代理；本 5m 窗口跳过。",
-            flush=True,
-        )
+        print(f"[跳过] 开盘价获取失败: {e}", flush=True)
         return
-    print(
-        f"窗口={window_ts} slug={slug} 开盘价={window_open:.2f}  来源=「{open_how}」",
-        flush=True,
-    )
+    print(f"  开盘={window_open:.2f} | 来源={open_how[:40]}", flush=True)
 
+    # ── 长休眠至狙击 ──────────────────────────────────
     sleep_s = close_at - _snipe_start_s() - now()
+    if sleep_s > 2.0:
+        print(f"  距狙击还有 {sleep_s:.0f}s，休眠中…", flush=True)
     if sleep_s > 0:
-        if sleep_s > 2.0:
-            print(
-                f"[调度] 窗口={window_ts} slug={slug} 距进入狙击尚早，"
-                f"休眠约 {sleep_s:.0f}s（至距收盘 {_snipe_start_s()}s 内再轮询；"
-                "非卡死，与结算队列并行）",
-                flush=True,
-            )
         time.sleep(sleep_s)
 
+    # ── 套利后台线程（狙击阶段并行）──────────────────
     poll = _arbitrage_poll_interval_s()
     log_a = _enable_arbitrage_log()
     trade_a = _enable_arbitrage_trade() and client is not None and not dry_run
@@ -1514,46 +1463,22 @@ def run_trade_cycle(
 
         def _arb_worker() -> None:
             n = 0
-            print(
-                f"[套利/后台] 线程已启动 window={window_ts} 间隔={poll:g}s "
-                f"log={log_a} trade={trade_a}（trade=真 才下双边单）",
-                flush=True,
-            )
             while not stop_arb.is_set():
-                try:
-                    n += 1
-                    if log_up_down_ask_spread(
-                        window_ts, up_tid, down_tid, client, dry_run, state, silent=True
-                    ):
-                        arb_hit_ev.set()
-                        print(
-                            f"[套利/后台] 第{n}次探测触发成交或跳过方向单，线程结束",
-                            flush=True,
-                        )
-                        return
-                except Exception as e:
-                    print(f"[套利] 后台轮询异常: {e}", flush=True)
-                    traceback.print_exc()
+                n += 1
+                if log_up_down_ask_spread(
+                    window_ts, up_tid, down_tid, client, dry_run, state, silent=True
+                ):
+                    arb_hit_ev.set()
+                    return
                 if stop_arb.wait(timeout=poll):
                     break
-            print(
-                f"[套利/后台] 线程结束 window={window_ts} 共完成探测≈{n}次（正常：狙击结束 stop）",
-                flush=True,
-            )
 
         arb_thread = threading.Thread(target=_arb_worker, name="arb-poll", daemon=True)
         arb_thread.start()
-        print(
-            f"[套利] 已启动后台线程每 {poll:g}s 探测双边卖一（仅本窗口狙击阶段；"
-            f"狙击结束即停；下窗重来）。若仍无行：看 [套利/后台] 是否「盘口不全」或关 ARBITRAGE_POLL_SUMMARY",
-            flush=True,
-        )
     elif poll <= 0 and (log_a or _enable_arbitrage_trade()):
-        print(
-            "[套利] ARBITRAGE_POLL_S=0：本窗口仅在周期开头测一次双边卖一；"
-            "狙击阶段无后台轮询。需要持续探测请设 ARBITRAGE_POLL_S=5 等",
-            flush=True,
-        )
+        print("  套利: ARBITRAGE_POLL_S=0，仅周期头测一次", flush=True)
+
+    # ── 狙击循环 ──────────────────────────────────────
     try:
         decision, ticks = snipe_loop(
             window_open,
@@ -1568,42 +1493,39 @@ def run_trade_cycle(
         stop_arb.set()
         if arb_thread is not None:
             arb_thread.join(timeout=min(8.0, poll + 2.0) if poll > 0 else 2.0)
+
+    # ── 方向过滤 ─────────────────────────────────────
     if decision.details.get("skip_trade"):
         print(
-            f"[狙击] 窗口末仍未达到最低置信度 "
-            f"{min_confidence_for_mode(mode):.2f}（当前={decision.confidence:.2f}），跳过本周期",
+            f"  → 跳过：狙击末置信 {decision.confidence:.2f} < {min_confidence_for_mode(mode):.2f}",
             flush=True,
         )
         return
 
     with _BOT_STATE_LOCK:
         if _loss_streak_should_pause(state):
-            print(
-                "[风控] 连亏冷却：近期方向单结算输过多，本周期跳过",
-                flush=True,
-            )
+            print("  → 跳过：连亏冷却", flush=True)
             return
 
+    # ── 盘口检查 ────────────────────────────────────
     px_decide = ticks[-1] if ticks else snipe_current_price(chainlink_feed)
     up_ask = get_best_ask(up_tid, client)
     down_ask = get_best_ask(down_tid, client)
 
     mx_sum = _direction_orderbook_max_sum()
     if mx_sum is not None:
-        if not should_trade_by_orderbook_for_direction(up_ask, down_ask, max_sum=mx_sum):
+        if up_ask is None or down_ask is None:
+            print("  → 跳过：盘口不全", flush=True)
+            return
+        if float(up_ask) + float(down_ask) > mx_sum:
+            print(f"  → 跳过：盘口合计 {float(up_ask)+float(down_ask):.3f} > {mx_sum}", flush=True)
             return
 
     only_lt = _direction_only_when_book_sum_lt()
-    if only_lt is not None:
-        if up_ask is None or down_ask is None:
-            print("[过滤] DIRECTION_ONLY_WHEN_BOOK_SUM_LT：盘口不全 → 跳过方向单", flush=True)
-            return
+    if only_lt is not None and up_ask is not None and down_ask is not None:
         s = float(up_ask) + float(down_ask)
         if s >= only_lt:
-            print(
-                f"[策略] 盘口合计={s:.4f} ≥ {only_lt}（未满足「仅低价差才方向」）→ 跳过方向单",
-                flush=True,
-            )
+            print(f"  → 跳过：盘口合计 {s:.3f} ≥ {only_lt}", flush=True)
             return
 
     if _direction_strategy() == "imbalance":
@@ -1611,13 +1533,12 @@ def run_trade_cycle(
         imbu = get_orderbook_imbalance(up_tid, client, depth)
         imbd = get_orderbook_imbalance(down_tid, client, depth)
         if imbu is None or imbd is None:
-            print("[过滤] 失衡策略：无法读取深度盘口", flush=True)
+            print("  → 跳过：无法读取盘口失衡", flush=True)
             return
         th_imb = _imbalance_threshold()
-        print(f"[imb] up={imbu:.3f} down={imbd:.3f} depth={depth} 阈={th_imb}", flush=True)
         d = decide_from_imbalance(imbu, imbd, th_imb)
         if d == 0:
-            print("[过滤] 无明显单侧盘口优势", flush=True)
+            print("  → 跳过：无明显单侧优势", flush=True)
             return
         syn_conf = min(1.0, max(abs(imbu), abs(imbd)) / max(th_imb, 1e-6))
         decision = replace(
@@ -1632,15 +1553,12 @@ def run_trade_cycle(
                 "imb_down": float(imbd),
             },
         )
-        print(
-            f"[方向] DIRECTION_STRATEGY=imbalance → {'Up(1)' if d == 1 else 'Down(-1)'}",
-            flush=True,
-        )
+        print(f"  方向=imbalance Up={imbu:.3f} Down={imbd:.3f} 阈={th_imb}", flush=True)
     elif _direction_strategy() == "reversal":
         th = _reversal_min_abs_pct()
         d = decide_reversal_direction(window_open, px_decide, min_abs_pct=th)
         if d == 0:
-            print(f"[过滤] 反转策略：|窗口偏离| ≤ {th}%%，不交易", flush=True)
+            print(f"  → 跳过：反转偏离 |pct|={abs((px_decide-window_open)/window_open*100):.4f}% ≤ {th}%", flush=True)
             return
         w_pct_r = (px_decide - window_open) / window_open * 100.0
         syn_conf = min(1.0, abs(w_pct_r) / max(th, 1e-9))
@@ -1655,27 +1573,25 @@ def run_trade_cycle(
                 "reversal_w_pct": w_pct_r,
             },
         )
-        print(
-            f"[方向] DIRECTION_STRATEGY=reversal → 方向={'Up(1)' if d == 1 else 'Down(-1)'} "
-            f"w_pct={w_pct_r:.4f}%% 合成置信度={syn_conf:.3f}",
-            flush=True,
-        )
+        print(f"  方向=reversal w_pct={w_pct_r:.4f}%", flush=True)
     else:
         min_dc = _min_decision_confidence()
+        min_score = _min_abs_score()
+        if min_score > 0.0 and abs(float(decision.score)) < min_score:
+            print(f"  → 跳过：|score| {abs(decision.score):.2f} < {min_score}", flush=True)
+            return
         if min_dc > 0.0 and float(decision.confidence) < min_dc:
-            print(
-                f"[过滤] 置信度太低 {decision.confidence:.2f} < MIN_DECISION_CONFIDENCE={min_dc:.2f}",
-                flush=True,
-            )
+            print(f"  → 跳过：置信度 {decision.confidence:.2f} < {min_dc:.2f}", flush=True)
             return
 
+    # ── 计算下注金额 ─────────────────────────────────
     token_up = decision.direction == 1
     token_id = up_tid if token_up else down_tid
     w_pct = (px_decide - window_open) / window_open * 100.0
     if _use_book_ask_for_entry():
         entry = entry_from_best_asks(int(decision.direction), up_ask, down_ask)
         if entry is None or entry > 0.97:
-            print(f"[过滤] 卖一入场价不可用或过贵 entry={entry}", flush=True)
+            print(f"  → 跳过：入场价 {entry} 不可用或过贵", flush=True)
             return
     else:
         entry = directional_entry_from_window_pct(int(decision.direction), w_pct)
@@ -1685,99 +1601,61 @@ def run_trade_cycle(
     if mwall is not None:
         tl = float(close_at) - now()
         if tl < float(mwall):
-            print(
-                f"[过滤] 距收盘仅 {tl:.1f}s < MIN_SECONDS_BEFORE_CLOSE_FOR_TRADE={mwall:g}，不交易",
-                flush=True,
-            )
+            print(f"  → 跳过：距收盘 {tl:.1f}s < {mwall}s", flush=True)
             return
 
     if _use_fair_prob_edge():
-        fair = estimate_fair_prob(window_open, px_decide)
-        ok_e, edgev = has_price_edge(
-            int(decision.direction),
-            float(entry),
-            fair,
-            _min_price_edge(),
-        )
+        fair = estimate_fair_prob(decision.confidence, int(decision.direction))
+        ok_e, edgev = has_price_edge(int(decision.direction), float(entry), fair, _min_price_edge())
         if not ok_e:
-            print(
-                f"[过滤] 无概率优势 edge={edgev:.4f} fair={fair:.3f} entry={float(entry):.3f} "
-                f"(MIN_PRICE_EDGE={_min_price_edge()})",
-                flush=True,
-            )
+            print(f"  → 跳过：无概率优势 edge={edgev:.4f}", flush=True)
             return
         edge_for_sizing = float(edgev)
-        print(
-            f"[edge] fair_est={fair:.3f} entry={float(entry):.3f} edge={edgev:.4f}",
-            flush=True,
-        )
 
     cap_mx = _max_directional_usd()
     fix_usd = _fixed_directional_usd()
     with _BOT_STATE_LOCK:
         if state.bankroll < min_bet:
-            print("资金低于最小下单额，跳过本周期")
+            print(f"  → 跳过：资金 {state.bankroll:.2f} < 最小 {min_bet}", flush=True)
             return
-
         if fix_usd is not None:
-            bet = fix_usd
-            if cap_mx is not None:
-                bet = min(bet, cap_mx)
-            bet = min(bet, state.bankroll)
+            bet = min(fix_usd, cap_mx or float("inf"), state.bankroll)
             if bet < min_bet:
-                print(
-                    f"方向单固定名义不可用：min(固定={fix_usd:.4f}, MAX_USD, 资金)={bet:.4f} < MIN_BET {min_bet}"
-                )
                 return
-            print(
-                f"[下注] 固定名义(FIXED_DIRECTIONAL_USD)={fix_usd:.4f}，"
-                f"实际={bet:.4f}（已按 MAX_USD / 资金封顶，与模式/Kelly 无关）"
-            )
         elif _enable_kelly():
-            bet = _kelly_directional_bet(
-                state.bankroll,
-                decision.confidence,
-                min_bet,
-                cap_mx,
-            )
+            bet = _kelly_directional_bet(state.bankroll, decision.confidence, min_bet, cap_mx)
             if bet is None:
                 return
         elif _use_edge_position_sizing() and edge_for_sizing is not None:
             bet = size_by_edge(state.bankroll, edge_for_sizing, cap_mx, min_bet)
             if bet < min_bet:
-                print(
-                    f"[下注] edge 仓位过小 {bet:.4f} < MIN_BET {min_bet}，跳过",
-                    flush=True,
-                )
                 return
-            print(
-                f"[下注] edge 仓位 edge={edge_for_sizing:.4f} frac={_edge_sizing_bankroll_frac()} "
-                f"scale={_edge_sizing_edge_scale()} → bet={bet:.4f}",
-                flush=True,
-            )
         else:
             raw_bet = compute_bet(mode, state.bankroll, state.principal, min_bet)
             if raw_bet <= 0:
-                print("资金低于最小下单额，跳过本周期")
                 return
             bet = raw_bet
             if cap_mx is not None:
                 bet = min(bet, cap_mx)
             if bet < min_bet:
-                print(
-                    f"方向单经 MAX_USD 封顶后为 {bet:.4f} < 最小下单 {min_bet}；"
-                    "请提高 MAX_USD、降低 MIN_BET 或增加资金"
-                )
                 return
             if cap_mx is not None and raw_bet > cap_mx:
-                print(f"[下注] 方向单 MAX_USD={cap_mx}：原始 {raw_bet:.4f} -> 封顶后 {bet:.4f}")
+                pass  # 已在下注行打印
 
     sig_cn = "涨(Up)" if token_up else "跌(Down)"
     print(
-        f"信号={sig_cn} 得分={decision.score:.2f} "
-        f"置信度={decision.confidence:.2f} 下注={bet:.2f} 参考入场价={entry:.3f}"
-    )
+        f"  ┌─── 交易信号 ──────────────────────────────", flush=True)
+    print(
+        f"  │ 方向={sig_cn}  得分={decision.score:.2f}  置信={decision.confidence:.2f}  "
+        f"入场={entry:.3f}  下注=${bet:.2f}", flush=True)
+    print(
+        f"  │ BTC 现价={px_decide:.2f}  窗口偏离={w_pct:.4f}%  窗口开={window_open:.2f}", flush=True)
+    print(
+        f"  │ 模式={mode}  dry_run={dry_run}", flush=True)
+    print(
+        f"  └─────────────────────────────────────────────", flush=True)
 
+    # ── 实盘下单 ─────────────────────────────────────
     if not dry_run and client is not None:
         deadline = close_at
         placed = False
@@ -1795,16 +1673,17 @@ def run_trade_cycle(
                         place_buy_fok(client, token_id, bet)
                 placed = True
             except Exception as e:
-                print(f"下单异常: {e}；{ORDER_RETRY} 秒后重试")
+                print(f"  下单异常: {e}，重试中…", flush=True)
                 time.sleep(ORDER_RETRY)
         if not placed:
-            print("窗口结束前仍未成功下单")
+            print("  → 下单超时，本窗结束", flush=True)
             return
 
+    # ── 扣款 & 入队结算 ───────────────────────────────
     with _BOT_STATE_LOCK:
-        bankroll_before_bet = state.bankroll
+        bankroll_before = state.bankroll
         state.bankroll -= bet
-        bankroll_after_bet = state.bankroll
+        bankroll_after = state.bankroll
 
     if dry_run:
         settle_after = float(os.environ.get("DRY_RUN_SETTLE_AFTER_S", "2"))
@@ -1826,22 +1705,20 @@ def run_trade_cycle(
         enqueue_settlement(job, state, chainlink_feed)
         with _BOT_STATE_LOCK:
             state.trades += 1
-            _append_dry_run_history(
-                state,
-                {
-                    "kind": "directional_bet",
-                    "trades": state.trades,
-                    "bankroll": bankroll_after_bet,
-                    "bankroll_before_bet": bankroll_before_bet,
-                    "window_ts": int(window_ts),
-                    "slug": slug,
-                    "bet": float(bet),
-                },
-            )
+            _append_dry_run_history(state, {
+                "kind": "directional_bet",
+                "trades": state.trades,
+                "bankroll": bankroll_after,
+                "bankroll_before_bet": bankroll_before,
+                "window_ts": int(window_ts),
+                "slug": slug,
+                "bet": float(bet),
+            })
             _save_dry_run_state(state)
         print(
-            "[干跑] 已入队结算队列（单线程稍后判输赢、改虚拟资金并写 JSON，不阻塞主循环）",
-            flush=True,
+            f"  ✓ 已下注 ${bet:.2f} → {sig_cn}，结算队列约 {settle_after:.1f}s 后判输赢",
+            f"  余额: {bankroll_before:.2f} → {bankroll_after:.2f}",
+            sep="\n  ", flush=True,
         )
         return
 
@@ -1858,10 +1735,7 @@ def run_trade_cycle(
     )
     with _BOT_STATE_LOCK:
         state.trades += 1
-    print(
-        "[实盘] 已入队收盘后赎回提醒（链上资金以 Portfolio / auto_claim.py 为准）",
-        flush=True,
-    )
+    print(f"  ✓ 已下注 ${bet:.2f} → {sig_cn}，实盘请手动赎回", flush=True)
 
 
 def print_run_config(args: argparse.Namespace, starting: float, min_bet: float) -> None:
@@ -1885,10 +1759,11 @@ def print_run_config(args: argparse.Namespace, starting: float, min_bet: float) 
         f"起点前回补最大提前毫秒(RTDS_OPEN_FALLBACK_MAX_MS)="
         f"{os.environ.get('RTDS_OPEN_FALLBACK_MAX_MS', '30000')}；"
         f"RTDS 看门狗「久未写入btc/usd」秒(RTDS_AUTO_RECONNECT_STALE_S)="
-        f"{os.environ.get('RTDS_AUTO_RECONNECT_STALE_S', '120')}（0=关；不以 payload 墙钟滞后为准） "
+        f"{os.environ.get('RTDS_AUTO_RECONNECT_STALE_S', '300')}（高胜率默认300s；0=关；不以 payload 墙钟滞后为准） "
         f"最小间隔(RTDS_AUTO_RECONNECT_MIN_INTERVAL_S)="
         f"{os.environ.get('RTDS_AUTO_RECONNECT_MIN_INTERVAL_S', '45')} "
-        f"on_open 后宽限(RTDS_WATCHDOG_GRACE_S)={os.environ.get('RTDS_WATCHDOG_GRACE_S', '40')}",
+        f"on_open 后宽限(RTDS_WATCHDOG_GRACE_S)={os.environ.get('RTDS_WATCHDOG_GRACE_S', '40')}；"
+        f"重连时清缓冲(RTDS_RECONNECT_CLEAR_BUFFER)={os.environ.get('RTDS_RECONNECT_CLEAR_BUFFER', '0')}(高胜率默认0=保留缓冲)",
         f"套利仅日志(ENABLE_ARBITRAGE_LOG)={_enable_arbitrage_log()}  套利合计告警阈值(ARBITRAGE_SUM_ALERT)={_arbitrage_sum_alert():.4f}",
         f"套利实盘(ENABLE_ARBITRAGE_TRADE)={_enable_arbitrage_trade()}  "
         f"套利双边合计美元(解析后)={arb_usd:.4f}",
@@ -1906,12 +1781,10 @@ def print_run_config(args: argparse.Namespace, starting: float, min_bet: float) 
         f"套利后台简要行(ARBITRAGE_POLL_SUMMARY)="
         f"{'关' if os.environ.get('ARBITRAGE_POLL_SUMMARY', '1').strip().lower() in ('0', 'false', 'no', 'off') else '开'}"
         f"（关时仍每轮一条短心跳）；周期内日志前缀：[周期] [套利/后台] [狙击]",
-        f"方向单盘口闸 DIRECTION_ORDERBOOK_MAX_SUM={os.environ.get('DIRECTION_ORDERBOOK_MAX_SUM', '') or '未设(不关)'}",
         f"仅低价差才方向 DIRECTION_ONLY_WHEN_BOOK_SUM_LT={os.environ.get('DIRECTION_ONLY_WHEN_BOOK_SUM_LT', '') or '未设(不关)'}",
         f"方向逻辑 DIRECTION_STRATEGY={_direction_strategy()}  REVERSAL_MIN_ABS_PCT={_reversal_min_abs_pct()}  "
         f"失衡深度 ORDERBOOK_IMBALANCE_DEPTH={_imbalance_depth()}  IMBALANCE_THRESHOLD={_imbalance_threshold()}",
-        f"概率优势 USE_FAIR_PROB_EDGE={_use_fair_prob_edge()}  MIN_PRICE_EDGE={_min_price_edge()}  "
-        f"FAIR_PROB_SIGMOID_SCALE={os.environ.get('FAIR_PROB_SIGMOID_SCALE', '50')}",
+        f"概率优势 USE_FAIR_PROB_EDGE={_use_fair_prob_edge()}  MIN_PRICE_EDGE={_min_price_edge()}",
         f"edge 仓位 USE_EDGE_POSITION_SIZING={_use_edge_position_sizing()}  "
         f"EDGE_SIZING_BANKROLL_FRAC={_edge_sizing_bankroll_frac()}  EDGE_SIZING_EDGE_SCALE={_edge_sizing_edge_scale()}",
         f"收盘前时间闸 MIN_SECONDS_BEFORE_CLOSE_FOR_TRADE="
@@ -1921,10 +1794,13 @@ def print_run_config(args: argparse.Namespace, starting: float, min_bet: float) 
         f"WINDOW={os.environ.get('LOSS_STREAK_WINDOW', '5')}  MAX_LOSSES={os.environ.get('LOSS_STREAK_MAX_LOSSES', '4')}",
         f"卖一作入场 USE_BOOK_ASK_FOR_ENTRY={_use_book_ask_for_entry()}  "
         f"TA最低置信 MIN_DECISION_CONFIDENCE="
-        f"{_min_decision_confidence():g}（0=不启用）  SPIKE_JUMP(尖峰)={_spike_jump()}",
+        f"{_min_decision_confidence():g}  "
+        f"最低|得分| MIN_ABS_SCORE={_min_abs_score():g}（高胜率新增过滤）  "
+        f"SPIKE_JUMP(尖峰)={_spike_jump()}；"
+        f"方向单盘口闸 DIRECTION_ORDERBOOK_MAX_SUM={os.environ.get('DIRECTION_ORDERBOOK_MAX_SUM', '1.05')}（高胜率默认1.05）",
     ]
     if args.dry_run:
-        dr_bs = os.environ.get("DRY_RUN_BINANCE_SETTLE", "").strip().lower() in (
+        dr_bs = os.environ.get("DRY_RUN_BINANCE_SETTLE", "1").strip().lower() in (
             "1",
             "true",
             "yes",
@@ -2114,40 +1990,82 @@ def _apply_queued_dry_settle(job: QueuedDrySettle, state: BotState) -> None:
     )
     time.sleep(wait_s)
     feed = _settlement_feed_cell[0]
-    last_err: Optional[BaseException] = None
-    actual = 0
     settle_meta: Dict[str, Any] = {}
+    actual = 0
+    settled = False  # True=结算成功(含 Binance 回退); False=全失败按输
+
+    # 最多 3 次尝试，每次用不同的容错策略
     for attempt in range(3):
+        settle_meta.clear()
         try:
             actual, settle_meta = resolve_window_direction_with_meta(
                 job.window_ts, feed, dry_run=True
             )
-            last_err = None
+            settled = True
             break
         except Exception as e:
-            last_err = e
+            settle_meta.clear()
+            settle_meta = {
+                "settle_method": "error",
+                "error": repr(e),
+                "window_ts": int(job.window_ts),
+                "attempt": attempt + 1,
+            }
             print(
                 f"[干跑/队列] 结算判定失败 ({attempt + 1}/3): {e}",
                 flush=True,
             )
-            time.sleep(2.0 * (attempt + 1))
-    if last_err is not None:
+            if attempt < 2:
+                time.sleep(2.0 * (attempt + 1))
+
+    if not settled:
+        # 全失败时：强制用 Binance 结算（绕过 RTDS 路径），
+        # 避免残留旧窗口数据导致日志/训练数据错位。
         print(
-            f"[干跑/队列] 结算多次失败，按输处理（未发放赢钱）: {last_err}",
+            "[干跑/队列] 结算多次失败，强制 Binance 回退判定输赢",
             flush=True,
         )
-        actual = -int(job.direction)
-        settle_meta = {
-            "settle_method": "error_fallback_loss",
-            "error": repr(last_err),
-            "window_ts": int(job.window_ts),
-        }
+        try:
+            bo, bc = _binance_window_edge_prices(job.window_ts)
+            actual = 1 if bc >= bo else -1
+            settle_meta.clear()
+            settle_meta = {
+                "settle_method": "binance_forced_fallback",
+                "binance_open": bo,
+                "binance_close": bc,
+                "open_used": bo,
+                "close_used": bc,
+                "window_ts": int(job.window_ts),
+                "note": "resolve_window_direction_with_meta 多次失败，强制 Binance 结算",
+            }
+            settled = True
+        except Exception as e2:
+            # Binance 也挂了，按输处理（不再依赖残留数据）
+            print(
+                f"[干跑/队列] Binance 回退也失败，按输处理: {e2}",
+                flush=True,
+            )
+            actual = -int(job.direction)
+            settle_meta.clear()
+            settle_meta = {
+                "settle_method": "error_fallback_loss",
+                "error": repr(e2),
+                "window_ts": int(job.window_ts),
+            }
 
     win = actual == job.direction
     bust_reset = False
+    settle_result = "赢" if win else "输"
+    settle_method = settle_meta.get("settle_method", "unknown")
+    ou = settle_meta.get("open_used") or settle_meta.get("open_rtds")
+    cu = settle_meta.get("close_used") or settle_meta.get("close_rtds")
+    bo = settle_meta.get("binance_open")
+    bc = settle_meta.get("binance_close")
+    dir_cn = lambda d: "涨(1)" if d == 1 else "跌(-1)"
+
+    settle_payout = 0.0
     with _BOT_STATE_LOCK:
         post_bet_bankroll = state.bankroll
-        settle_payout = 0.0
         if win:
             safe_entry = max(float(job.entry), 1e-9)
             shares = job.bet / safe_entry
@@ -2172,29 +2090,30 @@ def _apply_queued_dry_settle(job: QueuedDrySettle, state: BotState) -> None:
                 "bust_reset": bust_reset,
                 "bet": float(job.bet),
                 "entry_model": float(job.entry),
+                "settle_method": settle_method,
             },
         )
         _save_dry_run_state(state)
-    ou = settle_meta.get("open_used") or settle_meta.get("open_rtds")
-    cu = settle_meta.get("close_used") or settle_meta.get("close_rtds")
-    bo = settle_meta.get("binance_open")
-    bc = settle_meta.get("binance_close")
-    dir_cn = lambda d: "涨(1)" if d == 1 else "跌(-1)"
+
+    # ── 结算结果卡片 ────────────────────────────────
+    dir_actual = "涨" if actual == 1 else "跌"
+    dir_bet = "涨" if job.direction == 1 else "跌"
+    win_icon = "✓" if win else "✗"
+    settled_icon = "✓" if settled else "⚠"
     print(
-        f"[干跑/队列] 窗口={job.window_ts} 结算={'赢' if win else '输'} 资金余额={state.bankroll:.4f} "
-        f"settle={settle_meta.get('settle_method')} "
-        f"结果链={dir_cn(actual)} 下注方向={dir_cn(job.direction)} "
-        f"chainlink_open={ou} chainlink_close={cu} "
-        f"binance_open={bo} binance_close={bc}",
-        flush=True,
-    )
-    if state.dry_history:
-        lh = state.dry_history[-1]
+        f"  ┌─── 结算 {window_ts} ──────────────────────", flush=True)
+    print(
+        f"  │ {win_icon} 结果={dir_actual} | 下注={dir_bet} | settle={settle_method}", flush=True)
+    print(
+        f"  │ {settled_icon} settled={settled} | payout=${settle_payout:.2f} | "
+        f"余额={state.bankroll:.4f}", flush=True)
+    if bo is not None and bc is not None:
         print(
-            f"[干跑流水] 本条 seq={lh.get('seq')} kind={lh.get('kind')} "
-            f"trades={lh.get('trades')} bankroll={lh.get('bankroll')}",
-            flush=True,
-        )
+            f"  │ Binance open={bo:.2f} close={bc:.2f}", flush=True)
+    if bust_reset:
+        print(f"  │ 💥 bust重置 → {state.principal}", flush=True)
+    print(
+        f"  └──────────────────────────────────────────", flush=True)
     _append_trade_train_record(
         {
             "event": "directional_settle",
@@ -2211,14 +2130,10 @@ def _apply_queued_dry_settle(job: QueuedDrySettle, state: BotState) -> None:
             "decision_oracle_px": job.decide_px,
             "actual_outcome": actual,
             "win": win,
+            "settle_payout": settle_payout,
             "settle_meta": settle_meta,
         }
     )
-    if bust_reset:
-        print(
-            f"干跑：资金已重置为起始本金 {state.principal}",
-            flush=True,
-        )
 
 
 def _apply_queued_live_redeem_hint(job: QueuedLiveRedeemHint) -> None:
@@ -2393,25 +2308,14 @@ def main() -> None:
             continue
         if t_left < _snipe_start_s():
             sleep_s = t_left + 0.5
-            if sleep_s > 2.0:
-                print(
-                    f"[主循环] 距下一狙击窗口约 {sleep_s:.0f}s，休眠中（进程未卡死；"
-                    "连续跑时此处可能静默数分钟）",
-                    flush=True,
-                )
-            else:
-                print(
-                    f"[主循环] 本 5m 窗已较晚（距收盘 {t_left:.1f}s < 狙击提前 {_snipe_start_s()}s），"
-                    f"短眠 {sleep_s:.1f}s 对齐下一窗（避免 silent sleep）",
-                    flush=True,
-                )
+            print(f"[休眠] 距狙击窗口 {sleep_s:.0f}s，未进入本窗", flush=True)
             time.sleep(sleep_s)
             continue
 
         try:
             run_trade_cycle(client, state, args.mode, min_bet, args.dry_run, wts, chainlink_feed)
         except Exception as e:
-            print(f"[主循环] run_trade_cycle 异常（已记录并继续）: {e}", flush=True)
+            print(f"[错误] run_trade_cycle: {e}", flush=True)
             traceback.print_exc()
             time.sleep(5.0)
 
@@ -2423,10 +2327,7 @@ def main() -> None:
         if now() < close_this:
             sleep_s = max(0.5, close_this - now() + 0.5)
             if sleep_s > 2.0:
-                print(
-                    f"[主循环] 本 5m 窗口尚未结束，休眠约 {sleep_s:.0f}s 再进入下一周期调度",
-                    flush=True,
-                )
+                print(f"[休眠] 窗口未结束，{sleep_s:.0f}s 后下一窗", flush=True)
             time.sleep(sleep_s)
 
     print("[主循环] 退出：等待结算队列线程收尾…", flush=True)

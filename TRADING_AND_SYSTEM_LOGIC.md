@@ -52,12 +52,10 @@ current_window_ts(t=None):
 
 1. **`wts = current_window_ts()`**，**`close_at = wts + WINDOW`**，**`t_left = close_at - now()`**。
 2. 若 **`t_left <= 0`**：`sleep(0.25)`，`continue`（刚跨窗边界时的短自旋）。
-3. 若 **`t_left < _snipe_start_s()`**（默认 `_snipe_start_s()` 来自 `SNIPE_START`，且被夹在 `[SNIPE_DEADLINE+1, WINDOW-5]`，即默认 **6～295** 之间）：  
-   - **`sleep_s = t_left + 0.5`**，休眠后 **`continue`**。  
-   - **含义**：若进程在「本 5m 窗已剩余不足 `SNIPE_START` 秒」时才进入循环，**本窗不会调用 `run_trade_cycle`**，直接睡到近似下一窗。这是与「每窗必交易」不同的 **门控**。
-4. 否则调用 **`run_trade_cycle(...)`**，外层 **`try/except`**：异常打印栈并 `sleep(5)` 继续。
+3. 若 **`t_left < _snipe_start_s()`**：打印 **`[休眠] 距狙击窗口 Xs，未进入本窗`**，休眠后 **`continue`**。若进入较晚，本窗不调用 `run_trade_cycle`。
+4. 调用 **`run_trade_cycle(...)`**，外层 **`try/except`**：异常打印栈并 `sleep(5)` 继续。
 5. **`--once`** 或 **`max_trades`** 达标则退出循环。
-6. 若 **`now() < close_this`**（`close_this = wts + WINDOW`）：再 **`sleep(max(0.5, close_this - now() + 0.5))`**，避免同一窗内重复进周期。
+6. 若 **`now() < close_this`**：打印 **`[休眠] 窗口未结束，Xs 后下一窗`**，再休眠。
 
 ### 3.1 启动阶段（`main` 内、`while` 之前）
 
@@ -74,27 +72,24 @@ current_window_ts(t=None):
 
 1. **`close_at = window_ts + WINDOW`**，**`slug = window_slug(window_ts)`**。
 2. **`parse_gamma_tokens(slug)`** → `up_tid`, `down_tid`。
-3. **打印 `[周期]` 行**（含 `dry_run`、`client`、套利 POLL、套利日志/实盘开关）。
+3. **打印 `[======== 窗口 {wts} ========]` 块**（含 slug、dry_run、client、狙击提前秒、模式最低置信、套利开关；多行 `print`）。
 4. **`log_up_down_ask_spread(..., silent=False)`**（周期 **第一次** 套利检测）。若返回 **`True`**（实盘两腿 FOK 成功且扣款），**整个 `run_trade_cycle` 直接 `return`**：本窗 **不再** 取 Chainlink 开盘价、不再狙击、不下方向单。
-5. **`window_open_oracle(window_ts, chainlink_feed)`**（§5）。若抛异常：打印错误，**`return`**。
-6. 打印开盘价与来源说明。
-7. **`sleep_s = close_at - _snipe_start_s() - now()`**；若 `> 0` 则 `time.sleep(sleep_s)`（距进入狙击尚早的长睡）；可能打印 `[调度]`。
-8. **套利后台线程**（§9）：若 **`ARBITRAGE_POLL_S > 0`** 且 **`(ENABLE_ARBITRAGE_LOG 为真 OR (ENABLE_ARBITRAGE_TRADE 且 client 非空且非 dry_run))`**，则启动 **`_arb_worker`** 守护线程，在狙击阶段内每 `poll` 秒调用 **`log_up_down_ask_spread(..., silent=True)`**；否则若 POLL=0 且开了日志或实盘开关，打印一句说明「仅周期开头测一次」。  
-   - 若 **`poll > 0` 但既未开日志也未满足 trade 条件**，则 **不启动** 后台线程（`_enable_arbitrage_trade()` 为真但 dry_run 时 `trade_a` 为假，**只要开了日志仍会启动**）。
-9. **`snipe_loop(..., arb_hit=arb_hit_ev)`**（§6）。若抛出 **`ArbitrageCycleDone`**：**`return`**。  
-   **`finally`**：**`stop_arb.set()`**，若 `arb_thread` 存在则 **`join(timeout=min(8, poll+2) 或 2)`**。
-10. 若 **`decision.details.get("skip_trade")`**：打印置信度不足，**`return`**（本窗不下方向单）。
-11. **`token_up = (decision.direction == 1)`**，**`token_id = up_tid if token_up else down_tid`**。
-12. **`px_decide = ticks[-1] if ticks else snipe_current_price(chainlink_feed)`**。
-13. **`w_pct = (px_decide - window_open) / window_open * 100.0`**。
-14. **`entry = directional_entry_from_window_pct(decision.direction, w_pct)`**（§7.3）。
-15. **`cap_mx = _max_directional_usd()`**（仅 `MAX_USD`），**`fix_usd = _fixed_directional_usd()`**。
-16. **`with _BOT_STATE_LOCK:`** 内决定 **`bet`**（§8）；任一失败条件则 **`return`**。
-17. 打印信号、得分、置信度、下注、参考入场价。
-18. **实盘且 `client` 非空**：在 **`now() < close_at`** 内循环下单（§10）；失败则 `ORDER_RETRY` 秒重试；超时未 `placed` 则 **`return`**（**注意**：此分支 `return` 前 **未** 扣 `state.bankroll`，因扣款在下单成功逻辑之后）。
-19. **`with _BOT_STATE_LOCK:`**：**`state.bankroll -= bet`**（无论干跑或实盘，只要走过扣款点前路径；实盘若上面 `return` 则不会到此）。
-20. **干跑**：构造 **`QueuedDrySettle`** → **`enqueue_settlement`** → `trades+=1`、写 history、`**_save_dry_run_state**` → **`return`**。
-21. **实盘**：**`QueuedLiveRedeemHint`** 入队、`trades+=1`、打印赎回提示 → **`return`**（实盘方向单 **不** 在程序内自动结算盈亏，仅提醒）。
+5. **`window_open_oracle(window_ts, chainlink_feed)`**（§5）。若抛异常：打印 **`[跳过] 开盘价获取失败`**，`return`。
+6. 打印 **`开盘=X | 来源=XXX`**。
+7. **`sleep_s = close_at - _snipe_start_s() - now()`**；若 `> 2.0s` 打印 **`距狙击还有 Xs，休眠中…`**，然后 `time.sleep(sleep_s)`。
+8. **套利后台线程**（§9）：若 **`ARBITRAGE_POLL_S > 0`** 且 **(ENABLE_ARBITRAGE_LOG 或 trade)**，启动 `_arb_worker`；若 POLL=0 且开了日志/实盘开关，仅打印一行说明。
+9. **`snipe_loop(..., arb_hit=arb_hit_ev)`**（§6）。若抛出 **`ArbitrageCycleDone`**：**`return`**。`finally`**：**`stop_arb.set()`**，若 `arb_thread` 存在则 **`join(timeout=…)`**。
+10. 若 **`decision.details.get("skip_trade")`**：打印 **`→ 跳过：狙击末置信 X < Y`**，`return`。
+11. **`loss_streak_should_pause`**：若真，打印 **`→ 跳过：连亏冷却`**，`return`。
+12. **盘口检查**：`mx_sum` / `only_lt` 过滤；打印 **`→ 跳过：盘口不全/合计过贵`**，`return`。
+13. **方向策略**（imbalance / reversal / TA）：打印方向决策行。
+14. **信号过滤**：MIN_ABS_SCORE / MIN_DECISION_CONFIDENCE；打印 **`→ 跳过：|score|/置信度过弱`**，`return`。
+15. **入场价**：`USE_BOOK_ASK` 过滤；**概率优势**过滤；**距收盘时间**过滤；打印 **`→ 跳过`**，`return`。
+16. **计算 bet**：kelly / edge / 模式（safe/aggressive/degen）；打印 **`┌─── 交易信号 ──────────────────────────────`** 卡片块（含方向、得分、置信度、入场、金额、BTC现价、偏离）。
+17. **实盘且 `client` 非空**：在 **`now() < close_at`** 内循环下单；失败重试；超时打印 **`→ 下单超时，本窗结束`**，`return`。
+18. **`with _BOT_STATE_LOCK:`**：**`state.bankroll -= bet`**。
+19. **干跑**：构造 **`QueuedDrySettle`** → **`enqueue_settlement`** → 打印 **`✓ 已下注 $X → 涨/跌，结算队列约 Xs 后判输赢`** + 余额变化 → `return`。
+20. **实盘**：**`QueuedLiveRedeemHint`** 入队、`trades+=1`、打印 **`✓ 已下注 $X → 涨/跌，实盘请手动赎回`** → `return`。
 
 ---
 
@@ -123,26 +118,26 @@ current_window_ts(t=None):
 
 输入：**`window_open`**（oracle 开盘价）、**`window_close`**（= `close_at` 浮点）、**`mode`**、**`chainlink_feed`**、**`arb_hit`**。
 
-1. 打印狙击参数：`_snipe_start_s()`、**`SNIPE_PRICE_SOURCE`**（oracle/binance）、RTDS 状态后缀。
-2. **`min_conf = min_confidence_for_mode(mode)`**：safe **0.30**，aggressive **0.20**，degen **0.0**。
-3. **`while True`**：  
-   - **`t_left = window_close - now()`**。  
-   - 若 **`t_left < SNIPE_DEADLINE`**：**`break`** 出循环。  
-   - 若 **`arb_hit` 已 set**：抛 **`ArbitrageCycleDone`**。  
-   - 若 **`t_left > ss`**（尚未进入狙击窗口）：**`sleep(max(0.15, min(5.0, t_left - ss)))`**，`continue`。  
-   - 第一次进入狙击：`[狙击] 已进入狙击阶段...`。  
-   - **`px = snipe_current_price`** → **`ticks.append(px)`**。  
-   - 再检查 **`arb_hit`**。  
-   - 拉 **`fetch_recent_candles_1m(60)`**，最多 5 次重试。  
-   - **`res = analyze(window_open, px, candles, tick_prices=ticks[-120:])`**。  
-   - 更新 **`best`**：若 `best is None` 或 **`abs(res.score) > abs(best.score)`** 则 **`best = res`**。  
-   - **尖峰**：若 **`last_score` 非空** 且 **`abs(res.score - last_score) >= SPIKE_JUMP`**：**立即 `return res, ticks`**（**不** 检查 `min_conf`）。  
-   - **置信度达标**：若 **`res.confidence >= min_conf`**：**`return res, ticks`**。  
+1. 打印狙击参数：狙击提前秒、现价来源、RTDS 状态、模式最低置信度。
+2. **`min_conf = min_confidence_for_mode(mode)`**：safe **0.45**，aggressive **0.35**，degen **0.0**。（**高胜率配置**：原 safe=0.30/aggressive=0.20 偏低，已调高以过滤低质量信号）
+3. **`while True`**：
+   - **`t_left = window_close - now()`**。
+   - 若 **`t_left < SNIPE_DEADLINE`**：**`break`** 出循环。
+   - 若 **`arb_hit` 已 set**：抛 **`ArbitrageCycleDone`**。
+   - 若 **`t_left > ss`**（尚未进入狙击窗口）：**`sleep(max(0.15, min(5.0, t_left - ss)))`**，`continue`。
+   - 第一次进入狙击：打印 **`[狙击] → 狙击开始，距收盘 Xs`**。
+   - **`px = snipe_current_price`** → **`ticks.append(px)`**。
+   - 再检查 **`arb_hit`**。
+   - 拉 **`fetch_recent_candles_1m(60)`**，最多 5 次重试（失败静默重试）。
+   - **`res = analyze(candles, tick_prices=ticks[-120:])`**（新版：只用历史 K 线和 tick 数据，不依赖窗口内价格变动）。
+   - 更新 **`best`**：若 `best is None` 或 **`abs(res.score) > abs(best.score)`** 则 **`best = res`**。
+   - **尖峰**：若 **`last_score` 非空** 且 **`abs(res.score - last_score) >= SPIKE_JUMP`**：打印 **`[狙击] 尖峰！Δ=X.X，提前发射`**，**立即 `return res, ticks`**（**不** 检查 `min_conf`）。
+   - **置信度达标**：若 **`res.confidence >= min_conf`**：**`return res, ticks`**。
    - **`last_score = res.score`**，**`sleep(POLL)`**。
 
-4. **退出 `while` 后**（因 `t_left < SNIPE_DEADLINE`）：  
-   - 若 **`best is None`**（整个狙击段从未成功跑过带 `ss` 内逻辑 — 理论上少见）：再取一次价与 K 线，**`best = analyze(...)`**。  
-   - 若 **`best.confidence < min_conf`**：在 **`details` 中设 `skip_trade=True`**，返回该 **`AnalysisResult`**（**`run_trade_cycle` 会跳过下单**）。  
+4. **退出 `while` 后**（因 `t_left < SNIPE_DEADLINE`）：
+   - 若 **`best is None`**：再取一次价与 K 线，**`best = analyze(...)`**。
+   - 若 **`best.confidence < min_conf`**：在 **`details` 中设 `skip_trade=True`**，返回该 **`AnalysisResult`**（**`run_trade_cycle` 会跳过下单**）。
    - 否则 **`return best, ticks`**。
 
 ### 6.1 `snipe_current_price`
@@ -154,15 +149,34 @@ current_window_ts(t=None):
 
 ## 7. 信号与入场价模型
 
-### 7.1 `strategy.analyze(window_open_price, current_price, candles, tick_prices)`
+### 7.1 `strategy.analyze(candles, tick_prices, window_open, current_price)`
 
-- 若 **`window_open_price <= 0` 或 `current_price <= 0`**：返回 **`direction=1, score=0, confidence=0, details.error=invalid_prices`**（下游若未过滤，可能被当作「方向 Up、零置信」）。
-- **`window_pct = (current - open) / open * 100`**。  
-- **`w = _window_delta_weight(abs(window_pct))`**（分段：>0.10→7，>0.02→5，>0.005→3，>0.001→1，否则 0）。  
-- **`w_score = w` 若 `window_pct>0`；`-w` 若 `window_pct<0`；否则 0**。  
-- **`score = w_score + micro_momentum + acceleration + ema_cross + rsi_weight + volume_surge + tick_trend`**（各子项见 **`strategy.py`** 与 **附录 A**）。  
-- **`direction = 1 if score >= 0 else -1`**。  
-- **`confidence = min(abs(score) / 7.0, 1.0)`**。
+> ⚠️ **2024 年重大修复**：新版 `analyze()` 不再接收 `window_open/current_price` 参数，
+> 旧版用窗口内价格变动算分（循环论证），已彻底移除。
+
+**签名**：`analyze(candles, tick_prices=None, window_open=None, current_price=None)`
+- `candles`: 决策点之前的 1m K 线（最老在前，**不含窗口期内 K 线**）
+- `tick_prices`: 实盘 2s 采样数据（回测为空列表）
+- `window_open` / `current_price`: **已废弃，仅为向后兼容 bot.py**，新版本忽略
+
+**TA 信号**（只用历史 `candles` 计算）：
+
+| 子信号 | 描述 | 权重范围 |
+|--------|------|---------|
+| `_micro_momentum` | 最近 1 分钟涨跌 | ±2 |
+| `_acceleration` | 动量加速/减速 | ±1.5 |
+| `_ema_cross` | EMA(9) vs EMA(21) | ±1 |
+| `_rsi_weight` | RSI 超买超卖 | ±2 |
+| `_volume_surge` | 成交量突增 | ±1 |
+| `_trend_strength` | 最近 10 根方向一致性 | ±2 |
+| `_tick_trend` | tick 价格趋势（仅实盘）| ±2 |
+
+**汇总**：
+- `score = 上述七项之和`（范围约 -13 ~ +13）
+- `direction = 1 if score >= 0 else -1`
+- `confidence = min(abs(score) / 7.0, 1.0)`（归一化到 0~1）
+
+**旧版 `_window_delta_weight` 已移除**：旧版用窗口内已发生的 `window_pct` 算分，造成循环论证。
 
 ### 7.2 `token_price_from_delta(abs_window_pct)`（`bot.py`）
 
@@ -278,13 +292,14 @@ current_window_ts(t=None):
 
 ### 11.3 干跑队列结算 `_apply_queued_dry_settle`
 
-1. **`wait_s = max(0.1, job.close_at - now() + job.settle_after)`**，默认 **`DRY_RUN_SETTLE_AFTER_S=2`**。  
-2. **`resolve_window_direction_with_meta`** **最多 3 次**，失败间隔 **`2*(attempt+1)`** 秒。  
-3. 全失败：**`actual = -job.direction`**，**`settle_method=error_fallback_loss`**（**按输处理**，不增发赢钱）。  
-4. **`win = (actual == job.direction)`**。  
-5. 赢：**`shares = bet / max(entry, 1e-9)`**，**`settle_payout = shares * 1.0`**（模型按每股 1 USD 赎回），**`bankroll += settle_payout`**。  
-6. 若 **`bankroll < min_bet`**：**`bankroll = principal`**（**bust 重置**）。  
-7. 写 **`directional_settle`** history、**`_save_dry_run_state`**、打印、`TRADE_TRAIN_JSONL` 若设则追加。
+1. **`wait_s = max(0.1, job.close_at - now() + job.settle_after)`**，默认 **`DRY_RUN_SETTLE_AFTER_S=2`**。
+2. **`resolve_window_direction_with_meta`** 最多 3 次，失败间隔 **`2*(attempt+1)`** 秒。
+3. 若 3 次全部失败（包括 RTDS 开盘、Binance 收盘都失败），则**强制直接调用 `_binance_window_edge_prices`** 再次尝试（绕过 RTDS 路径）。
+4. 若强制 Binance 也失败：**`actual = -job.direction`**，**`settle_method=error_fallback_loss`**（按输处理，不增发赢钱）。**注意**：修复了旧版「Binance 失败后仍用上次残留数据」的 bug。
+5. **`win = (actual == job.direction)`**。
+6. 赢：**`shares = bet / max(entry, 1e-9)`**，**`settle_payout = shares * 1.0`**（模型按每股 1 USD 赎回），**`bankroll += settle_payout`**。
+7. 若 **`bankroll < min_bet`**：**`bankroll = principal`**（**bust 重置**）。
+8. 写 **`directional_settle`** history、**`_save_dry_run_state`**、打印、`TRADE_TRAIN_JSONL` 若设则追加。
 
 ---
 
@@ -299,15 +314,34 @@ current_window_ts(t=None):
 
 ---
 
-## 13. `compare_runs.py` 与实盘的差异
+## 13. `compare_runs.py` 与实盘的差异（修复后版本）
 
-- **数据**：仅 **Binance 历史 1m**（`fetch_klines_range_hours`），**无** RTDS、**无** 尖峰、**无** 狙击循环。  
-- **决策时刻**：每个窗在 **`decision_ms = (window_ts + WINDOW - SNIPE_START) * 1000`** 取 **`rows[i1][1].close`** 为 **`current_price`**；**`window_open = rows[i0][1].open`**，`i0/i1/i_res` 由 **`idx_at_or_before`** 在 `ts_list` 上取。  
-- **K 线传入 `analyze`**：**`hist[-60:]`**（至少需 **`i1+1 >= 25`** 才继续）。  
-- **结果**：**`outcome`** 来自 **`o0 = rows[i0].open`, `c_end = rows[i_res].close`**，与 **`bot._binance_window_edge_prices`** 语义一致（注释已写明）。  
-- **置信过滤**：网格阈值 **`THRESHOLDS 0.0..0.8`** 与 **`res.confidence`** 比较（**不是** `min_confidence_for_mode`）。  
-- **sizing**：**`flat` / `safe` / `aggressive`** 三种（**无 degen**）；**`entry`** 使用 **`directional_entry_from_window_pct`**（从 **`bot` 导入**）。  
-- **胜负 PnL**：**`shares = bet/entry`**，赢则 **`bankroll += shares`**（与干跑模型一致）。
+> ⚠️ **2024 年重大修复**：旧版 `compare_runs.py` 有严重的循环论证 bug（见下方「旧版 Bug」说明）。
+
+### 13.1 旧版 Bug（已修复）
+
+旧版 `analyze(window_open, current_price, candles, tick_prices)` 传入窗口内的价格变动来算分：
+
+```
+窗口内已涨 → w_score → direction=Up
+窗口结束时涨了 → outcome=Up
+outcome == direction → "100% 胜率"
+```
+
+这相当于用「同一事实」证明自己，永远不会错。新版已彻底移除此逻辑。
+
+### 13.2 新版回测逻辑
+
+| 项目 | 说明 |
+|------|------|
+| **数据** | Binance 历史 1m（`fetch_klines_range_hours`），无 RTDS/尖峰/狙击循环 |
+| **TA 信号** | `analyze(candles)` 只接收决策点之前的 K 线（不含窗口期内），用纯历史指标打分 |
+| **决策时刻** | 窗口开始前取 `MIN_CANDLES_FOR_TA=60` 根历史 K 线做分析 |
+| **入场价** | 用 `estimate_fair_prob` + `entry_price_from_fair_prob`（基于 TA confidence），不用窗口内变动 |
+| **结果判断** | `outcome` 来自窗口结束时的收盘价（与预测无关的独立事件）|
+| **置信过滤** | 网格阈值 0.0..0.8 与 `res.confidence` 比较 |
+| **盈亏计算** | `shares = bet / entry`，赢了 `bankroll += shares`，输了 `bankroll -= bet` |
+| **sizing** | flat / safe / aggressive 三种 |
 
 ---
 
@@ -370,7 +404,7 @@ current_window_ts(t=None):
 5. **尖峰** 路径 **不要求** `confidence >= min_conf`。  
 6. **`compare_runs`** 的阈值网格 **≠** `min_confidence_for_mode`。  
 7. **套利** 两腿 FOK **非原子**：可能单边成交，代码已警告需人工处理。  
-8. **结算队列** `_settlement_consumer_loop`：单条任务异常会打印栈并 **吞掉**（不自动重试该条 settle）。
+8. **结算队列** `_settlement_consumer_loop`：单条任务异常会打印栈并 **吞掉**（不自动重试该条 settle）。结算结果打印为 **`┌─── 结算 XXXX ──────────────────────`** 卡片块（✓/✗ 结果、方向、payout、余额、Binance价格、若bust则打印重置信息）。
 
 ---
 
@@ -382,69 +416,70 @@ current_window_ts(t=None):
 
 ---
 
-## 附录 A — `strategy.analyze` 各加成分项（与代码逐行一致）
+## 附录 A — `strategy.analyze` 各加成分项（修复后版本）
 
-以下 **`candles` 均为「最老在前」，最后一根为当前分钟**。
+> ⚠️ **旧版 `_window_delta_weight` 已移除**（循环论证）。新版有 7 个子信号。
 
-### A.1 `_window_delta_weight(a)`，`a = abs(window_pct)`
+以下 **`candles`** 均为「最老在前」，不含窗口期内 K 线。
 
-| 条件 | 返回值 |
-|------|--------|
-| `a > 0.10` | 7.0 |
-| `a > 0.02` | 5.0 |
-| `a > 0.005` | 3.0 |
-| `a > 0.001` | 1.0 |
-| 否则 | 0.0 |
+### A.1 `_micro_momentum(candles)`
 
-**`w_score`**：`window_pct > 0` → `+w`；`window_pct < 0` → `-w`；`window_pct == 0` → `0`。
-
-### A.2 `_micro_momentum(candles)`
-
-- `len < 2` → 0  
+- `len < 2` → 0
 - 否则：`last.close > prev.close` → **+2**；`<` → **-2**；相等 → **0**
 
-### A.3 `_acceleration(candles)`
+### A.2 `_acceleration(candles)`
 
-- `len < 3` → 0  
-- `m0 = last.close - last.open`，`m2 = candles[-3].close - candles[-3].open`  
-- `m0 > 0 and m0 > m2` → **+1.5**  
-- `m0 < 0 and m0 < m2` → **-1.5**  
-- `m0 > 0 and m0 < m2` → **-0.5**  
-- `m0 < 0 and m0 > m2` → **+0.5**  
+- `len < 3` → 0
+- `m0 = last.close - last.open`，`m2 = candles[-3].close - candles[-3].open`
+- `m0 > 0 and m0 > m2` → **+1.5**
+- `m0 < 0 and m0 < m2` → **-1.5**
+- `m0 > 0 and m0 < m2` → **-0.5**
+- `m0 < 0 and m0 > m2` → **+0.5**
 - 否则 **0**
 
-### A.4 `_ema_cross(candles)`
+### A.3 `_ema_cross(candles)`
 
-- `len(closes) < 21` → 0  
-- `E9` 与 `E21` 为对 **closes** 的 EMA(9)、EMA(21) 序列（首值为 SMA 种子）  
+- `len(closes) < 21` → 0
+- `E9` 与 `E21` 为对 **closes** 的 EMA(9)、EMA(21) 序列（首值为 SMA 种子）
 - `e9[-1] > e21[-1]` → **+1**；`<` → **-1**；否则 **0**
 
-### A.5 `_rsi_weight(candles)`
+### A.4 `_rsi_weight(candles)`
 
-- RSI 为 Wilder 风格近似（见 `_rsi`：14 根涨跌和平均）  
+- RSI 为 Wilder 风格近似（见 `_rsi`：14 根涨跌和平均）
 - `RSI > 75` → **-2**；`< 25` → **+2**；`> 60` → **-1**；`< 40` → **+1**；否则 **0**
 
-### A.6 `_volume_surge(candles)`
+### A.5 `_volume_surge(candles)`
 
-- `len < 6` → 0  
-- `recent = 最后 3 根均量`，`prior = 再往前三根均量`；`prior==0` → 0  
-- 若 `recent < 1.5 * prior` → 0  
+- `len < 6` → 0
+- `recent = 最后 3 根均量`，`prior = 再往前三根均量`；`prior==0` → 0
+- 若 `recent < 1.5 * prior` → 0
 - 否则：`last.close >= last.open` → **+1**，否则 **-1**
+
+### A.6 `_trend_strength(candles)`
+
+- `len < 10` → 0
+- 统计最近 10 根 K 线中 `close > open`（阳线）的数量 `up_count`
+- `dn_count = 10 - up_count`，`bias = up_count - dn_count`（范围 -10 ~ +10）
+- `bias >= 7` → **+2**；`bias <= -7` → **-2**
+- `bias >= 4` → **+1**；`bias <= -4` → **-1**
+- 否则 **0**
 
 ### A.7 `_tick_trend(tick_prices)`
 
-- `len < 5` → 0  
-- `move_pct = (last-first)/first*100`；`|move_pct| < 0.005` → 0  
-- `ups` = 相邻上升对数，`downs` = 相邻下降对数，`n = ups+downs`；`n==0` → 0  
-- `ups/n >= 0.60` 且 `move_pct > 0` → **+2**  
-- `downs/n >= 0.60` 且 `move_pct < 0` → **-2**  
+- `len < 5` → 0
+- `move_pct = (last-first)/first*100`；`|move_pct| < 0.005` → 0
+- `ups` = 相邻上升对数，`downs` = 相邻下降对数，`n = ups+downs`；`n==0` → 0
+- `ups/n >= 0.60` 且 `move_pct > 0` → **+2**
+- `downs/n >= 0.60` 且 `move_pct < 0` → **-2**
 - 否则 **0**
 
-### A.8 汇总
+### A.8 汇总（修复后）
 
-**`score = w_score + 上述六项`**  
-**`direction = 1 if score >= 0 else -1`**  
-**`confidence = min(abs(score)/7.0, 1.0)`**
+**`score = micro_momentum + acceleration + ema_cross + rsi_weight + volume_surge + trend_strength + tick_trend`**
+**`direction = 1 if score >= 0 else -1`**
+**`confidence = min(abs(score) / 7.0, 1.0)`**（分母改为 7，因为有 7 个子信号）
+
+> 旧版 `score` 范围约 -13 ~ +13（6 个子信号），新版也是 7 个子信号。
 
 ---
 
@@ -525,8 +560,8 @@ Playwright 需额外执行：`playwright install chromium`。
 
 | 模式 | 最低置信度（狙击内） | 名义思路（未启用 Kelly 时） |
 |------|----------------------|-----------------------------|
-| **safe** | 0.30 | `max(MIN_BET, min(bankroll, 25% bankroll))` |
-| **aggressive** | 0.20 | 本金以下全押；有盈利后只用 **利润部分** `bankroll - principal` |
+| **safe** | 0.45 | `max(MIN_BET, min(bankroll, 25% bankroll))` |
+| **aggressive** | 0.35 | 本金以下全押；有盈利后只用 **利润部分** `bankroll - principal` |
 | **degen** | 0.0 | **全仓** `bankroll`（仍受 `MAX_USD` 等约束） |
 
 另：**`FIXED_DIRECTIONAL_USD`**、**`ENABLE_KELLY`**、**`MAX_USD`** 会覆盖或裁剪上述名义。
@@ -543,11 +578,14 @@ Playwright 需额外执行：`playwright install chromium`。
 - **领先侧/逆势侧** 的模型价见 **`directional_entry_from_window_pct`**（§7.3 与附录 B），避免旧版「永远用 `abs(delta)` 高价」导致逆势赢钱被高估。  
 - 结算 oracle：**RTDS Chainlink** 优先，失败则 **Binance 五根 1m 首尾**（见 §11）；可选 **`DRY_RUN_BINANCE_SETTLE=1`** 强制 Binance。
 
-### E.9 `compare_runs.py`（网格回测）
+### E.9 `compare_runs.py`（网格回测，修复版）
 
-- **9 个置信阈值 × 3 种 sizing（flat/safe/aggressive）= 27 组**；在 **历史 1m K** 上调用真实 **`strategy.analyze`**。  
-- **决策时刻**固定在「距收盘 `SNIPE_START` 秒」那根 K 的 close（见 `compare_runs` 源码），**无** 狙击循环、**无** 尖峰、**无** RTDS。  
-- 输出 Excel：Summary / Best Config Trades / Bankroll Curves。
+> ⚠️ 2024 年修复：旧版有循环论证 bug，已重写。详见 §13。
+
+- **9 个置信阈值 × 3 种 sizing（flat/safe/aggressive）= 27 组**
+- 决策用窗口前 60 根历史 K 线做 TA 分析，**不含窗口期内 K 线**
+- 入场价用 `estimate_fair_prob` + `entry_price_from_fair_prob`（基于 TA confidence）
+- 输出 Excel：Summary（含跳过原因统计）/ Best Config Trades / Bankroll Curves
 
 ### E.10 结算数据源（以代码为准，纠正旧英文表述）
 
@@ -571,10 +609,10 @@ python auto_claim.py --headed           # 浏览器赎回辅助
 
 ### E.12 经验与排障（翻译自旧稿 + 与实现对齐）
 
-1. **窗口内价格方向**仍是 5m 二元问题的核心；EMA/RSI 噪声大，故用大权重 `window_delta`。  
+1. **趋势一致性**：`analyze()` 用 7 个子信号综合打分，包括 `_trend_strength` 捕捉最近 10 根的方向一致性。  
 2. **入场时机**：`SNIPE_START` 可调；过早易反转，过晚价差差；默认 10s 为折中。  
 3. **置信度与必交易**：当前 **不再** 保证「压哨必下单」；若全程未达阈值且未触发尖峰，**safe/aggressive 可跳过**。  
-4. **模型入场价**影响干跑/Excel 可信度；已用 **方向敏感** 的 **`directional_entry_from_window_pct`**。  
+4. **模型入场价**影响干跑/Excel 可信度；已用基于 TA confidence 的 **`entry_price_from_fair_prob`**。  
 5. **Polymarket 最小 5 股** 与 GTC 0.95 组合 ≈ **4.75 USD** 下限，小资金可能无法走限价退路。  
 6. **Binance**：狙击段每约 2s 拉 K 线，失败会重试；`backtest.binance_get` 对断连有退避；网络差可调 **`BINANCE_HTTP_RETRIES`** 等。
 
@@ -606,9 +644,9 @@ python auto_claim.py --headed           # 浏览器赎回辅助
 | `DIRECTION_STRATEGY` | `ta` | 设 **`imbalance`** 时：用 Up/Down 两 token 各自前 N 档 **`(bid-ask)/(bid+ask)`**，仅单侧 **`> IMBALANCE_THRESHOLD`** 才给方向；**双侧同时过阈 → 不下**（降噪）。 |
 | `ORDERBOOK_IMBALANCE_DEPTH` | `3` | 每侧累加档数。 |
 | `IMBALANCE_THRESHOLD` | `0.25` | 失衡绝对值下限。 |
-| `USE_FAIR_PROB_EDGE` | 关 | 用现价相对开盘的 **sigmoid 估计 P(涨)**，与 **entry**（模型或卖一）比：买 Up 要求 **`fair - entry > MIN_PRICE_EDGE`**，买 Down 要求 **`(1-fair) - entry > MIN_PRICE_EDGE`**。 |
+| `USE_FAIR_PROB_EDGE` | 关 | 用策略 confidence 作为概率基准，避免用窗口内价格变动的循环论证。买 Up 要求 **`fair - entry > MIN_PRICE_EDGE`**，买 Down 要求 **`(1-fair) - entry > MIN_PRICE_EDGE`**。 |
 | `MIN_PRICE_EDGE` | `0.03` | 最小概率优势。 |
-| `FAIR_PROB_SIGMOID_SCALE` | `50` | sigmoid 陡峭度。 |
+| `FAIR_PROB_SIGMOID_SCALE` | ~~`50`~~ | **已废弃**，不再使用 sigmoid。 |
 | `USE_EDGE_POSITION_SIZING` | 关 | 在 **无** 固定名义、**无** Kelly 时，`bet = bankroll * EDGE_SIZING_BANKROLL_FRAC * min(1, edge*EDGE_SIZING_EDGE_SCALE)`，再与 `MAX_USD`、资金、`MIN_BET` 约束。 |
 | `EDGE_SIZING_BANKROLL_FRAC` | `0.02` | 基准资金比例。 |
 | `EDGE_SIZING_EDGE_SCALE` | `10` | edge 放大系数。 |

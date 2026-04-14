@@ -6,11 +6,11 @@ Subscribe topic `crypto_prices_chainlink`, filter `{"symbol":"btc/usd"}`。
 服务端对快照可能带 `topic":"crypto_prices"`（与 `crypto_prices_chainlink` 并存），只要 `payload.symbol` 为 `btc/usd` 即解析。
 Use payload.timestamp (ms) and payload.value; first tick with timestamp >= boundary captures open/close at window edges.
 
-Env（与「久无包就重连 / 清空缓冲」相关）：
-  RTDS_AUTO_RECONNECT_STALE_S — 默认 120；超过该墙钟秒数未写入 btc/usd 则 close WS 触发重连。
-    设为 0|off|false|none 可关闭此逻辑，仅依赖真实断线重连（更「等 RTDS」，但 WS 假死时恢复慢）。
-    可调大到 600、1800 等（上限 3600）减少误重连。
-  RTDS_RECONNECT_CLEAR_BUFFER — 默认 1；设为 0|false|no|off 时，watchdog 强制重连**不清空** tick 缓冲（仍 close WS），减轻丢窗口边界附近数据。
+Env（高胜率默认值）：
+  RTDS_AUTO_RECONNECT_STALE_S — 默认 300s（原 120s）；超过该墙钟秒数未写入 btc/usd 则 close WS 触发重连。
+    高胜率建议 >=300s，避免频繁清缓冲丢失窗口边界数据。
+    设为 0|off|false|none 可关闭此逻辑。
+  RTDS_RECONNECT_CLEAR_BUFFER — 默认 0（原 1）；设为 0 时重连**不清空** tick 缓冲（仍 close WS），保证窗口边界数据不丢失。
 """
 
 from __future__ import annotations
@@ -36,14 +36,15 @@ def _rtds_auto_reconnect_stale_s() -> float:
     仅看「久未成功解析并写入 btc/usd」的墙钟秒数：超过阈值则 close WS 触发重连。
     **不用** payload 时间戳相对墙钟的差值——Chainlink 的 payload 时间本身常晚于墙钟数十秒～数分钟，属正常，误用会频繁重连。
     RTDS_AUTO_RECONNECT_STALE_S=0|off|false|none 关闭（仅依赖断线重连）。
+    高胜率建议：>=300s（5分钟），避免频繁清缓冲丢失窗口边界数据。
     """
-    raw = os.environ.get("RTDS_AUTO_RECONNECT_STALE_S", "120").strip().lower()
+    raw = os.environ.get("RTDS_AUTO_RECONNECT_STALE_S", "300").strip().lower()
     if raw in ("0", "off", "false", "none", ""):
         return 0.0
     try:
-        return max(20.0, min(float(raw), 3600.0))
+        return max(60.0, min(float(raw), 3600.0))
     except ValueError:
-        return 120.0
+        return 300.0
 
 
 def _rtds_auto_reconnect_min_interval_s() -> float:
@@ -62,8 +63,8 @@ def _rtds_watchdog_grace_s() -> float:
 
 
 def _rtds_reconnect_clear_buffer() -> bool:
-    """watchdog 触发的强制重连是否清空 tick；RTDS_RECONNECT_CLEAR_BUFFER=0 保留（仍 close WS）。"""
-    raw = os.environ.get("RTDS_RECONNECT_CLEAR_BUFFER", "1").strip().lower()
+    """watchdog 触发的强制重连是否清空 tick；高胜率默认=0（保留缓冲，减轻丢窗口边界数据）。"""
+    raw = os.environ.get("RTDS_RECONNECT_CLEAR_BUFFER", "0").strip().lower()
     return raw not in ("0", "false", "no", "off", "none")
 
 
