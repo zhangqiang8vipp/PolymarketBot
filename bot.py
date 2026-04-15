@@ -1282,6 +1282,91 @@ _settlement_feed_cell: List[Optional[Any]] = [None]
 # --once dry_run 时，worker 结算完毕后 set，供主线程等待
 _settlement_done_evt: Optional[threading.Event] = None
 
+# ── 窗口 Start/Close Price 追踪（demo 逻辑）────────────────────
+_prev_window_ts: Optional[int] = None          # 上一窗口 ts
+_prev_start_price: Optional[float] = None       # 上一窗口 Start Price (BTC/USD)
+_prev_start_prob: Optional[float] = None       # 上一窗口 Start Price (概率，与 _prev_start_price 同源)
+_last_close_price: Optional[float] = None       # 当前窗口最后一条 Chainlink tick（下一个窗口的 close）
+
+
+def _record_close_price(price: float) -> None:
+    """每个 Chainlink tick 进来时更新最后价格。"""
+    global _last_close_price
+    _last_close_price = price
+
+
+def _on_new_window(
+    window_ts: int,
+    window_open: float,
+    start_price_btc: Optional[float],
+    chainlink_feed: Any,
+) -> None:
+    """
+    新窗口开始时：打印上一窗口的 Start Price(概率+BTC) + Close Price(Chainlink) + 胜负判定，然后重置状态。
+    参考 demo：close >= start → UP ✅ / DOWN ❌（均为 BTC/USD 价格）。
+    """
+    global _prev_window_ts, _prev_start_price, _prev_start_prob, _last_close_price
+    if _prev_window_ts is not None and _prev_start_price is not None and _last_close_price is not None:
+        result = "UP ✅" if _last_close_price >= _prev_start_price else "DOWN ❌"
+        prob_note = f"（概率={_prev_start_prob:.4f}）" if _prev_start_prob is not None else ""
+        print(
+            f"\n═══════════════════════════════════════\n"
+            f"  上一窗口 {window_slug(_prev_window_ts)} 结束\n"
+            f"  Start Price(BTC/USD) : ${_prev_start_price:.2f} {prob_note}\n"
+            f"  Close Price(BTC/USD)  : ${_last_close_price:.2f}\n"
+            f"  结果                   : {result}\n"
+            f"═══════════════════════════════════════",
+            flush=True,
+        )
+    _prev_window_ts = window_ts
+    _prev_start_prob = window_open
+    _prev_start_price = start_price_btc
+    _last_close_price = None
+
+
+def _maybe_refresh_shares_loop(
+    up_tid: str,
+    down_tid: str,
+    bet_usd: float,
+    until: float,
+    poll_interval: float = 60.0,
+) -> None:
+    """
+    在狙击等待期间，每 poll_interval 秒刷新一次 Up/Down 真实 best ask + shares。
+    参考 demo 的 refresh_shares()。
+    """
+    _refresh_shares(up_tid, down_tid, bet_usd)  # 立即打印一次
+    next_refresh = time.time() + poll_interval
+    while time.time() < until:
+        remaining = until - time.time()
+        sleep_for = min(next_refresh - time.time(), remaining)
+        if sleep_for > 0:
+            time.sleep(max(0.0, sleep_for))
+        if time.time() < until:
+            _refresh_shares(up_tid, down_tid, bet_usd)
+            next_refresh = time.time() + poll_interval
+
+
+def _refresh_shares(up_tid: str, down_tid: str, bet_usd: float) -> None:
+    """抓 Up/Down best ask 并打印 shares 参考信息（用于狙击前的实时盘口监控）。"""
+    try:
+        up_ask = get_best_ask(up_tid, None)
+        down_ask = get_best_ask(down_tid, None)
+        if up_ask and up_ask > 0:
+            up_shares = bet_usd / up_ask
+            print(
+                f"  📈 Up  best_ask=${up_ask:.4f}  bet=${bet_usd:.2f} → {up_shares:.2f} shares",
+                flush=True,
+            )
+        if down_ask and down_ask > 0:
+            down_shares = bet_usd / down_ask
+            print(
+                f"  📉 Down best_ask=${down_ask:.4f}  bet=${bet_usd:.2f} → {down_shares:.2f} shares",
+                flush=True,
+            )
+    except Exception:
+        pass
+
 
 def min_confidence_for_mode(mode: str) -> float:
     """
@@ -1446,6 +1531,7 @@ def snipe_loop(
 
         px = snipe_current_price(chainlink_feed)
         ticks.append(px)
+        _record_close_price(px)
         if arb_hit is not None and arb_hit.is_set():
             raise ArbitrageCycleDone
 
@@ -1483,6 +1569,7 @@ def snipe_loop(
     if best is None:
         px = snipe_current_price(chainlink_feed)
         ticks.append(px)
+        _record_close_price(px)
         best = analyze(candles, tick_prices=ticks) if candles else AnalysisResult(
             direction=0, score=0.0, confidence=0.0, details={"skip_trade": True}
         )
@@ -1563,6 +1650,17 @@ def run_trade_cycle(
         )
         return
 
+    # Demo 逻辑：新窗口开始时打印上一窗口 Start/Close Price + 胜负
+    # window_open 是概率；需要额外获取 BTC/USD 价格用于与 close_price 比较
+    start_price_btc: Optional[float] = None
+    try:
+        ref_btc = fetch_btc_price()
+        if ref_btc > 0 and 0.001 < window_open < 0.999:
+            start_price_btc = ref_btc / (1.0 - window_open)
+    except Exception:
+        pass
+    _on_new_window(window_ts, window_open, start_price_btc, chainlink_feed)
+
     # ── 窗口起点 BTC/USD 参考价（用于后续百分比换算）───────────────────────
     # window_open 是概率（0~1），需要窗口起点的 BTC/USD 价格来统一单位
     try:
@@ -1576,6 +1674,20 @@ def run_trade_cycle(
     # ── 套利探测（周期开头）───────────────────────────────
     if log_up_down_ask_spread(window_ts, up_tid, down_tid, client, dry_run, state):
         return
+
+    # ── Demo shares 刷新线程（等待狙击期间每秒监控盘口）──────────────
+    ref_shares_usd = float(os.environ.get("SHARES_REFRESH_USD", "1.0"))
+    snipe_begin = close_at - _snipe_start_s()
+
+    shares_thread: Optional[threading.Thread] = None
+    if snipe_begin > now() + 5:
+        shares_thread = threading.Thread(
+            target=_maybe_refresh_shares_loop,
+            args=(up_tid, down_tid, ref_shares_usd, snipe_begin),
+            name="shares-refresh",
+            daemon=True,
+        )
+        shares_thread.start()
 
     # ── 长休眠至狙击 ──────────────────────────────────
     sleep_s = close_at - _snipe_start_s() - now()
