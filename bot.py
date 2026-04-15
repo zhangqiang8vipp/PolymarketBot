@@ -845,6 +845,53 @@ def _rtds_open_accept_late_tick() -> bool:
     )
 
 
+def _gamma_window_open_px(window_ts: int) -> Tuple[Optional[float], str]:
+    """
+    方向一（最准确）：窗口开始前主动从 Polymarket REST API 获取 lastTradePrice。
+
+    原理：
+    - 在窗口开始前 10s 查询 Gamma API slug 对应市场
+    - lastTradePrice = Polymarket 交易所该市场最近一笔成交价
+    - 窗口刚开时成交极少或无 → lastTradePrice ≈ 窗口开盘价
+    - 无需 RTDS WebSocket 连接，纯 REST，窗口前同步请求即可
+
+    返回 (价格或 None, 来源说明)
+    """
+    slug = window_slug(window_ts)
+    try:
+        r = requests.get(GAMMA_EVENTS, params={"slug": slug}, timeout=10)
+        r.raise_for_status()
+        ev = r.json()
+    except Exception as e:
+        return None, f"Gamma API 请求失败: {e}"
+
+    try:
+        markets = ev[0].get("markets", [])
+        if not markets:
+            return None, "Gamma: 事件下无 markets"
+        m = markets[0]
+    except (IndexError, TypeError) as e:
+        return None, f"Gamma: 解析 markets 失败: {e}"
+
+    ltp = m.get("lastTradePrice")
+    if ltp is None:
+        return None, "Gamma: lastTradePrice 为 None（市场尚无成交）"
+
+    # 验证数据有效性：lastTradePrice 应在 [0.01, 0.99]
+    try:
+        f = float(ltp)
+        if not (0.001 < f < 0.999):
+            return None, f"Gamma: lastTradePrice={f} 超出合理范围 [0.001, 0.999]"
+    except (TypeError, ValueError):
+        return None, f"Gamma: lastTradePrice={ltp} 无法转为浮点数"
+
+    best_bid = m.get("bestBid")
+    best_ask = m.get("bestAsk")
+    bid_str = f" bid={best_bid}" if best_bid is not None else ""
+    ask_str = f" ask={best_ask}" if best_ask is not None else ""
+    return float(ltp), f"Gamma lastTradePrice={ltp}{bid_str}{ask_str}（窗口开始前 REST 查询，接近窗口开盘价）"
+
+
 def _chainlink_window_open_px(feed: Any, window_ts: int) -> Tuple[Optional[float], str]:
     """
     窗口开盘价：优先边界后第一条 tick（可选最大 payload 滞后）；若无则短暂等待；仍无则用边界前最近一条（见 RTDS_OPEN_FALLBACK_MAX_MS）。
@@ -910,37 +957,41 @@ def window_open_oracle(
     feed: Optional[Any],
 ) -> Tuple[float, str]:
     """
-    Price To Beat：优先 Polymarket RTDS Chainlink btc/usd；否则 Binance 1m 开盘价。
-    返回 (价格, 来源说明) — 第二项务必打日志，便于判断与网页是否同源。
+    Price To Beat：新优先级
+    1. Gamma REST lastTradePrice（方向一：最准确，窗口前主动查询）
+    2. RTDS Chainlink tick（方向零：若 RTDS 缓冲有窗口边界附近数据）
+    3. Binance 1m K 线 open（方向二：兜底）
     """
+    # 方向一（最优先）：Gamma REST API
+    px_gamma, how_gamma = _gamma_window_open_px(window_ts)
+    if px_gamma is not None:
+        return float(px_gamma), f"方向一 Gamma REST — {how_gamma}"
+
+    # 方向零：RTDS（若传入且可用）
     if feed is None:
+        print(
+            "[开盘价] 方向一 Gamma 无数据（市场尚无成交或 API 失败），"
+            "未接 RTDS，直接走 Binance",
+            flush=True,
+        )
         p = fetch_window_open_price_binance(window_ts)
         return (
             float(p),
-            "Binance 1m K 线 BTCUSDT 开盘价（未接 RTDS / 已禁用；与网页 Chainlink 目标价可能不一致）",
+            "Binance 1m K 线 BTCUSDT 开盘价（Gamma 无数据且未接 RTDS）",
         )
-    px, how = _chainlink_window_open_px(feed, window_ts)
-    if px is not None:
-        return float(px), f"Polymarket RTDS — {how}"
+    px_rtds, how_rtds = _chainlink_window_open_px(feed, window_ts)
+    if px_rtds is not None:
+        return float(px_rtds), f"方向零 Polymarket RTDS — {how_rtds}"
+
+    # 方向二（兜底）：Binance 1m K 线
     print(
-        "[开盘价] 本窗口无法用 RTDS 对齐 Chainlink「起点价」（与启动自检里 WS 是否活着不是一回事："
-        "自检看的是**最近**有无 tick；起点价需要**窗口边界附近**的 payload）。原因摘要："
-        f"{how} → 回退 Binance 1m K 线（与网页目标价可能偏差）",
+        "[开盘价] 方向一(Gamma) 失败，方向零(RTDS) 失败 → 回退 Binance 1m K 线",
         flush=True,
     )
-    if os.environ.get("RTDS_FALLBACK_DEBUG", "").strip().lower() in ("1", "true", "yes", "on"):
-        diag = getattr(feed, "diagnose_rtds_open_buffer", None)
-        if callable(diag):
-            print(f"[开盘价] RTDS 诊断({window_ts}): {diag(window_ts)}", flush=True)
-    else:
-        print(
-            "[开盘价] 提示：设置 RTDS_FALLBACK_DEBUG=1 可打印缓冲与时间轴诊断",
-            flush=True,
-        )
     p = fetch_window_open_price_binance(window_ts)
     return (
         float(p),
-        f"Binance 1m K 线 BTCUSDT 开盘价（RTDS 无可用：{how}）",
+        f"Binance 1m K 线 BTCUSDT 开盘价（Gamma: {how_gamma}；RTDS: {how_rtds}）",
     )
 
 
