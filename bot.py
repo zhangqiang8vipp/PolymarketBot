@@ -162,6 +162,8 @@ ORDER_RETRY = 3.0
 SPIKE_JUMP = 1.5
 MIN_SHARES_POLY = 5
 GTC_LIMIT_PRICE = 0.95
+# 狙击提前退出：窗口末期连续 N 次置信不足则跳过（默认 4 次，约 3s 内无好转则退出）
+SNIPE_EARLY_EXIT_CONSECUTIVE = int(os.environ.get("SNIPE_EARLY_EXIT_CONSECUTIVE", "4"))
 
 
 def _snipe_start_s() -> int:
@@ -1384,6 +1386,7 @@ def snipe_loop(
         time.sleep(t_until_snipe)
 
     snipe_armed = False
+    low_conf_streak = 0  # 连续低置信计数
     while True:
         t_left = deadline - now()
         if t_left <= 0:
@@ -1436,7 +1439,21 @@ def snipe_loop(
             return res, ticks
         # 置信度触发条件：K 线就绪后才判断，未就绪时继续循环等待
         if kline_fetch_done and res.confidence >= min_conf:
+            low_conf_streak = 0
             return res, ticks
+        # ── 提前退出：K 线就绪 + 末段置信持续不足 ──────────────────────────────
+        if kline_fetch_done:
+            if res.confidence < min_conf:
+                low_conf_streak += 1
+                if low_conf_streak >= SNIPE_EARLY_EXIT_CONSECUTIVE:
+                    print(
+                        f"[狙击] 窗口{window_ts} | 距收盘 {t_left:.1f}s，连续 {low_conf_streak} 次置信不足 "
+                        f"(conf={res.confidence:.2f} < {min_conf:.2f})，提前退出",
+                        flush=True,
+                    )
+                    break
+            else:
+                low_conf_streak = 0
         last_score = res.score
         time.sleep(POLL)
 
