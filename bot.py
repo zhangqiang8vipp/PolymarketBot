@@ -468,18 +468,18 @@ def should_trade_by_orderbook_for_direction(
 
 
 def decide_reversal_direction(
-    window_open: float,
+    window_open_btc_price: float,
     current_price: float,
     *,
     min_abs_pct: float,
 ) -> int:
     """
-    反转：已涨相对开盘则押 Down(-1)，已跌则押 Up(1)；|偏离|过小返回 0 不交易。
-    min_abs_pct 与 w_pct 同量纲：(current-open)/open*100。
+    反转：已涨相对窗口起点 BTC 价则押 Down(-1)，已跌则押 Up(1)；|偏离|过小返回 0 不交易。
+    min_abs_pct 单位：%，与 w_pct 同量纲。
     """
-    if window_open <= 0 or current_price <= 0:
+    if window_open_btc_price <= 0 or current_price <= 0:
         return 0
-    w_pct = (current_price - window_open) / window_open * 100.0
+    w_pct = (current_price - window_open_btc_price) / window_open_btc_price * 100.0
     if abs(w_pct) <= min_abs_pct:
         return 0
     return -1 if w_pct > 0 else 1
@@ -854,15 +854,11 @@ def _rtds_open_accept_late_tick() -> bool:
 
 def _gamma_window_open_px(window_ts: int) -> Tuple[Optional[float], str]:
     """
-    方向一（最准确）：窗口开始前主动从 Polymarket REST API 获取 lastTradePrice。
+    方向一（最准确）：从 Polymarket REST API 获取窗口开盘概率。
 
-    原理：
-    - 在窗口开始前 10s 查询 Gamma API slug 对应市场
-    - lastTradePrice = Polymarket 交易所该市场最近一笔成交价
-    - 窗口刚开时成交极少或无 → lastTradePrice ≈ 窗口开盘价
-    - 无需 RTDS WebSocket 连接，纯 REST，窗口前同步请求即可
-
-    返回 (价格或 None, 来源说明)
+    优先用 bestBid/bestAsk 中点（若市场有做市商挂单则直接可得概率）；
+    次选 lastTradePrice（若有成交记录）。
+    返回值统一为概率（0~1）。
     """
     slug = window_slug(window_ts)
     try:
@@ -880,23 +876,32 @@ def _gamma_window_open_px(window_ts: int) -> Tuple[Optional[float], str]:
     except (IndexError, TypeError) as e:
         return None, f"Gamma: 解析 markets 失败: {e}"
 
-    ltp = m.get("lastTradePrice")
-    if ltp is None:
-        return None, "Gamma: lastTradePrice 为 None（市场尚无成交）"
-
-    # 验证数据有效性：lastTradePrice 应在 [0.01, 0.99]
-    try:
-        f = float(ltp)
-        if not (0.001 < f < 0.999):
-            return None, f"Gamma: lastTradePrice={f} 超出合理范围 [0.001, 0.999]"
-    except (TypeError, ValueError):
-        return None, f"Gamma: lastTradePrice={ltp} 无法转为浮点数"
-
     best_bid = m.get("bestBid")
     best_ask = m.get("bestAsk")
-    bid_str = f" bid={best_bid}" if best_bid is not None else ""
-    ask_str = f" ask={best_ask}" if best_ask is not None else ""
-    return float(ltp), f"Gamma lastTradePrice={ltp}{bid_str}{ask_str}（窗口开始前 REST 查询，接近窗口开盘价）"
+    ltp = m.get("lastTradePrice")
+
+    # 优先 bestBid/bestAsk 中点（市场有挂单时最准确）
+    if best_bid is not None and best_ask is not None:
+        try:
+            f_bid = float(best_bid)
+            f_ask = float(best_ask)
+            if 0 < f_bid < f_ask < 2.0:
+                mid = (f_bid + f_ask) / 2.0
+                if 0.001 < mid < 0.999:
+                    return float(mid), f"Gamma bid-ask中点={mid:.4f} bid={f_bid} ask={f_ask}"
+        except (TypeError, ValueError):
+            pass
+
+    # 次选 lastTradePrice
+    if ltp is not None:
+        try:
+            f = float(ltp)
+            if 0.001 < f < 0.999:
+                return float(f), f"Gamma lastTradePrice={f}"
+        except (TypeError, ValueError):
+            pass
+
+    return None, "Gamma: 无有效概率数据（bid/ask/lastTradePrice 均不可用）"
 
 
 def _chainlink_window_open_px(feed: Any, window_ts: int) -> Tuple[Optional[float], str]:
@@ -968,6 +973,8 @@ def window_open_oracle(
     1. Gamma REST lastTradePrice（方向一：最准确，窗口前主动查询）
     2. RTDS Chainlink tick（方向零：若 RTDS 缓冲有窗口边界附近数据）
     3. Binance 1m K 线 open（方向二：兜底）
+
+    返回值统一为概率（0~1）。
     """
     # 方向一（最优先）：Gamma REST API
     px_gamma, how_gamma = _gamma_window_open_px(window_ts)
@@ -988,18 +995,41 @@ def window_open_oracle(
         )
     px_rtds, how_rtds = _chainlink_window_open_px(feed, window_ts)
     if px_rtds is not None:
-        return float(px_rtds), f"方向零 Polymarket RTDS — {how_rtds}"
+        # RTDS 返回 BTC/USD（73995 级别），归一化为概率
+        try:
+            ref_btc = fetch_btc_price()
+            if ref_btc > 0:
+                ratio = ref_btc / px_rtds
+                prob = min(0.999, max(0.001, 1.0 - ratio))
+                print(
+                    f"[开盘价] 方向零 RTDS: BTC/USD={px_rtds:.2f} ref={ref_btc:.2f} "
+                    f"ref/px={ratio:.4f} → prob={prob:.4f}  （{how_rtds[:60]}）",
+                    flush=True,
+                )
+                return float(prob), f"方向零 Polymarket RTDS — {how_rtds}"
+        except Exception:
+            pass
+        # 兜底：无法归一化时直接走 Binance 概率
+        print(
+            f"[开盘价] 方向零 RTDS BTC价格={px_rtds:.2f} 归一化失败 → 改用 Binance",
+            flush=True,
+        )
 
-    # 方向二（兜底）：Binance 1m K 线
-    print(
-        "[开盘价] 方向一(Gamma) 失败，方向零(RTDS) 失败 → 回退 Binance 1m K 线",
-        flush=True,
-    )
-    p = fetch_window_open_price_binance(window_ts)
-    return (
-        float(p),
-        f"Binance 1m K 线 BTCUSDT 开盘价（Gamma: {how_gamma}；RTDS: {how_rtds}）",
-    )
+    # 方向二（兜底）：Binance 1m K 线 → 归一化为概率
+    print("[开盘价] 回退 Binance 1m K 线", flush=True)
+    btc_kline_open = fetch_window_open_price_binance(window_ts)
+    ref_btc = fetch_btc_price()
+    if ref_btc > 0:
+        ratio = ref_btc / btc_kline_open
+        prob = min(0.999, max(0.001, 1.0 - ratio))
+        print(
+            f"[开盘价] Binance: BTC/K线={btc_kline_open:.2f} ref={ref_btc:.2f} "
+            f"ref/px={ratio:.4f} → prob={prob:.4f}",
+            flush=True,
+        )
+        return float(prob), f"Binance 1m K 线 BTCUSDT 开盘价"
+    print("[开盘价] Binance: ref获取失败，用默认值 prob=0.5", flush=True)
+    return 0.5, f"Binance 1m K 线 BTCUSDT 开盘价"
 
 
 def _binance_window_edge_prices(window_ts: int) -> Tuple[float, float]:
@@ -1541,6 +1571,13 @@ def run_trade_cycle(
         )
         return
 
+    # ── 窗口起点 BTC/USD 参考价（用于后续百分比换算）───────────────────────
+    # window_open 是概率（0~1），需要窗口起点的 BTC/USD 价格来统一单位
+    try:
+        window_open_btc_price = fetch_btc_price()
+    except Exception:
+        window_open_btc_price = None
+
     print(f"[窗口 {window_ts}] slug={slug} | {mode} | {'干跑' if dry_run else '实盘'} | 开盘={window_open:.2f}", flush=True)
     print(f"  开盘={window_open:.2f} | 来源={open_how[:40]}", flush=True)
 
@@ -1652,7 +1689,11 @@ def run_trade_cycle(
 
     # ── 盘口检查（复用预取数据；若预取失败则快速重试一次）─────────────────
     px_decide = ticks[-1] if ticks else snipe_current_price(chainlink_feed)
-    w_pct = (px_decide - window_open) / window_open * 100.0
+    # 百分比必须在同一单位域计算：统一转为「相对窗口起点的 BTC 价格百分比变化」
+    if window_open_btc_price is not None and window_open_btc_price > 0 and px_decide > 0:
+        w_pct = (px_decide / window_open_btc_price - 1.0) * 100.0
+    else:
+        w_pct = 0.0
     up_ask: Optional[float] = None
     down_ask: Optional[float] = None
     if not dry_run:
@@ -1727,7 +1768,7 @@ def run_trade_cycle(
         )
     elif _direction_strategy() == "reversal":
         th = _reversal_min_abs_pct()
-        d = decide_reversal_direction(window_open, px_decide, min_abs_pct=th)
+        d = decide_reversal_direction(window_open_btc_price, px_decide, min_abs_pct=th)
         if d == 0:
             _skip_and_journal(
                 window_ts=window_ts, mode=mode, window_open=window_open, open_how=open_how,
@@ -1737,7 +1778,7 @@ def run_trade_cycle(
                 reason=f"反转偏离不足(偏离={w_pct:+.3f}% thr={th}%)",
             )
             return
-        w_pct_r = (px_decide - window_open) / window_open * 100.0
+        w_pct_r = w_pct
         syn_conf = min(1.0, abs(w_pct_r) / max(th, 1e-9))
         decision = replace(
             decision,
@@ -2117,7 +2158,7 @@ def _append_trade_to_xlsx(
             ws.freeze_panes = "A2"
 
         from datetime import datetime as dt_cls
-        dt_str = dt_cls.utcfromtimestamp(window_ts).strftime("%Y-%m-%d %H:%M:%S")
+        dt_str = dt_cls.fromtimestamp(window_ts, tz=dt_cls.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
         # 累计盈亏 = 当前余额 - 历史起始余额
         cum_pnl = post_settle_bankroll - initial_bankroll
         ws.append([

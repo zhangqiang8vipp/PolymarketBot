@@ -73,7 +73,7 @@ def binance_get(path: str, params: Dict[str, Any], timeout: int = 5) -> requests
         conn_err: BaseException | None = None
         for attempt in range(retries):
             try:
-                r = requests.get(url, params=params, timeout=(5, 5))
+                r = requests.get(url, params=params, timeout=(5, 15))
                 conn_err = None
                 break
             except (requests.ConnectionError, requests.Timeout, OSError) as e:
