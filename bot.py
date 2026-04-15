@@ -868,6 +868,10 @@ def _gamma_window_open_px(window_ts: int) -> Tuple[Optional[float], str]:
     except Exception as e:
         return None, f"Gamma API 请求失败: {e}"
 
+    # 防御：slug 不存在时 API 返回 [] 或 {}
+    if not ev:
+        return None, f"Gamma: slug={slug} 无对应事件（市场尚未挂出）"
+
     try:
         markets = ev[0].get("markets", [])
         if not markets:
@@ -1557,7 +1561,11 @@ def run_trade_cycle(
 ) -> None:
     close_at = window_ts + WINDOW
     slug = window_slug(window_ts)
-    up_tid, down_tid = parse_gamma_tokens(slug)
+    try:
+        up_tid, down_tid = parse_gamma_tokens(slug)
+    except ValueError as e:
+        print(f"[窗口 {window_ts}] 跳过：{e}", flush=True)
+        return
 
     # ── 开盘价 ──────────────────────────────────────
     try:
