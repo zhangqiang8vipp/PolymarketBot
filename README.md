@@ -14,11 +14,12 @@ PolymarketBot 是一个针对 [Polymarket](https://polymarket.com) 平台上 **B
 
 **核心功能：**
 
-- 自动获取 Binance BTCUSDT 1 分钟 K 线数据
+- 自动获取 Binance BTCUSDT 1 分钟 K 线数据（历史回退用 Coinbase 兜底）
 - 基于多指标加权技术分析（TA）预测价格走向
 - 在 5 分钟窗口的最后阶段（狙击阶段）自动下单
 - 可选接入 Polymarket Chainlink RTDS WebSocket 获取实时价格
 - 支持干跑（模拟交易）和实盘交易两种模式
+- 干跑完成后自动写入 `bot_trades.xlsx` 记录每笔交易
 
 ### 工作原理
 
@@ -26,10 +27,10 @@ PolymarketBot 是一个针对 [Polymarket](https://polymarket.com) 平台上 **B
 ┌─────────────────────────────────────────────────────────────────┐
 │                        5 分钟窗口周期                            │
 ├─────────────────────────────────────────────────────────────────┤
-│  窗口开始（0s）    │    狙击开始（约 290s）  │  窗口结束（300s）  │
+│  窗口开始（0s）    │    狙击开始（距收盘 SNIPE_START 秒）  │  窗口结束（300s）  │
 │                    │         ↓                │                  │
-│   获取窗口开盘价    │   每 2 秒轮询分析一次    │   结算判定输赢    │
-│   (RTDS/Binance)   │   等待信号出现          │   自动赎回        │
+│   获取窗口开盘价    │   每 POLL 秒轮询分析一次    │   结算判定输赢    │
+│   (RTDS/Binance)   │   等待信号出现            │   自动赎回        │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -48,17 +49,20 @@ PolymarketBot 是一个针对 [Polymarket](https://polymarket.com) 平台上 **B
 PolymarketBot/
 ├── bot.py                 # 主程序：交易循环、订单执行、干跑/实盘
 ├── strategy.py            # 技术分析引擎：多指标合成打分
-├── backtest.py            # Binance K 线数据拉取
+├── backtest.py            # Binance K 线数据拉取（含 Coinbase 兜底）
 ├── compare_runs.py        # 网格回测：多参数组合测试
 ├── compare_results.py     # 回测 vs 实际结果对比
+├── backtest_vs_polymarket.py  # 回测预测 vs Polymarket 实际对比
 ├── fetch_poly_results.py  # 抓取 Polymarket 实际结算数据
-├── chainlink_rtds.py      # Polymarket RTDS WebSocket 连接
+├── chainlink_rtds.py     # Polymarket RTDS WebSocket 连接
+├── trading_logic.py       # 共享交易逻辑：仓位计算、入场价
 ├── setup_creds.py        # CLOB API 凭证生成工具
-├── auto_claim.py          # Playwright 自动赎回脚本
+├── auto_claim.py         # Playwright 自动赎回脚本
 ├── TRADING_AND_SYSTEM_LOGIC.md  # 完整技术文档
-├── COMMANDS.md            # 详细命令使用说明
-├── README.md              # 本文档
-└── .env                   # 环境变量配置（需自行创建）
+├── COMMANDS.md           # 详细命令使用说明
+├── CHANGELOG.md          # 策略演化记录
+├── README.md             # 本文档
+└── .env                  # 环境变量配置（需自行创建）
 ```
 
 ---
@@ -199,11 +203,14 @@ python bot.py --mode safe
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
-| `STARTING_BANKROLL` | 起始资金 | 1.0 |
-| `MIN_BET` | 最小下注 | 1.0 |
-| `SNIPE_START` | 狙击提前秒数 | 10 |
+| `STARTING_BANKROLL` | 起始资金 | 50.0 |
+| `MIN_BET` | 最小下注 | 0.5 |
+| `SNIPE_START` | 狙击提前秒数 | 20（.env默认60） |
 | `DIRECTION_STRATEGY` | 方向策略 | ta |
-| `BOT_MODE` | 策略模式 | safe |
+| `BOT_MODE` | 策略模式 | degen |
+| `MIN_DECISION_CONFIDENCE` | TA 最低置信度 | 0.30（.env默认0.1） |
+| `MIN_ABS_SCORE` | 最低得分绝对值 | 2.0（.env默认1.0） |
+| `BOT_TRADES_XLSX` | 干跑 Excel 记录路径 | bot_trades.xlsx |
 
 ### 2. strategy.py — 技术分析引擎
 
@@ -452,9 +459,9 @@ while True:
 
 机器人执行多层级信号过滤：
 
-1. **模式置信度**：低于模式要求的最低置信度跳过
-2. **得分阈值**：|score| 低于 MIN_ABS_SCORE 跳过
-3. **盘口检查**：Up ask + Down ask 超过阈值跳过
+1. **模式置信度**：低于模式要求的最低置信度跳过（degen 为 0）
+2. **得分阈值**：`|score|` 低于 `MIN_ABS_SCORE` 跳过（默认 2.0，干跑测试可调低）
+3. **盘口检查**：实盘时 Up ask + Down ask 超过阈值跳过（**干跑跳过此检查**）
 4. **价格优势**：无足够概率优势跳过
 5. **连亏冷却**：连续亏损后暂停交易
 
@@ -488,7 +495,7 @@ Polymarket 机制：
 
 | 变量 | 说明 | 推荐值 |
 |------|------|--------|
-| `SNIPE_START` | 狙击提前秒数 | 10-15 |
+| `SNIPE_START` | 狙击提前秒数（须≥20s保证K线获取时间） | 60 |
 | `SNIPE_PRICE_SOURCE` | 价格来源 | oracle |
 | `SPIKE_JUMP` | 尖峰阈值 | 1.5 |
 
@@ -496,9 +503,9 @@ Polymarket 机制：
 
 | 变量 | 说明 | 推荐值 |
 |------|------|--------|
-| `MIN_DECISION_CONFIDENCE` | 最低置信度 | 0.30 |
-| `MIN_ABS_SCORE` | 最低得分 | 2.0 |
-| `DIRECTION_ORDERBOOK_MAX_SUM` | 盘口上限 | 1.05 |
+| `MIN_DECISION_CONFIDENCE` | 最低置信度 | 0.30（干跑测试可设0.1） |
+| `MIN_ABS_SCORE` | 最低得分 | 2.0（干跑测试可设1.0） |
+| `DIRECTION_ORDERBOOK_MAX_SUM` | 盘口上限（仅实盘生效） | 1.05 |
 
 ### RTDS 配置
 
@@ -552,6 +559,32 @@ Polymarket 机制：
  "decision_score":3.5,"decision_confidence":0.5,"win":true,"settle_payout":19.23,
  "settle_meta":{"settle_method":"binance_klines_only","binance_open":97000.0,"binance_close":97200.0}}
 ```
+
+### 干跑交易记录（Excel）
+
+每次结算后自动追加一行到 `bot_trades.xlsx`（路径可通过 `BOT_TRADES_XLSX` 环境变量自定义）：
+
+| 列 | 说明 |
+|---|---|
+| `window_ts` | 窗口 Unix 时间戳 |
+| `窗口时间` | 窗口开始时间（北京时间） |
+| `slug` | 市场 slug |
+| `mode` | 策略模式 |
+| `direction` | 1=Up, -1=Down |
+| `bet` | 下注金额 |
+| `entry` | 入场模型价 |
+| `actual` | 实际结算方向 |
+| `win` | 是否赢 |
+| `settle_payout` | 结算收益 |
+| `post_bet_bankroll` | 下注后余额 |
+| `post_settle_bankroll` | 结算后余额 |
+| `settle_method` | 结算方式（rtds_chainlink / binance_klines_only 等） |
+| `score` | TA 综合得分 |
+| `confidence` | TA 置信度 |
+| `pnl` | **累计盈亏** = post_settle_bankroll - 会话起始余额 |
+| `起始余额` | 会话开始时的余额 |
+
+同 `window_ts` 防重。`pnl` 为累计值，每行反映当前余额相对于会话开始时的盈亏。
 
 ### 回测结果（Excel）
 

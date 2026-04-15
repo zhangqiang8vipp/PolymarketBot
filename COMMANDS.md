@@ -251,7 +251,7 @@ POLY_FUNDER_ADDRESS=your_funder_address
 
 | 环境变量 | 说明 | 默认值 |
 |----------|------|--------|
-| `SNIPE_START` | 距收盘多少秒开始狙击 | 10 |
+| `SNIPE_START` | 距收盘多少秒开始狙击 | 20（.env默认60） |
 | `SNIPE_PRICE_SOURCE` | 狙击价格来源 | oracle |
 | `SPIKE_JUMP` | 尖峰阈值 | 1.5 |
 | `USE_BOOK_ASK_FOR_ENTRY` | 用盘口卖一作入场价 | 0 |
@@ -261,9 +261,9 @@ POLY_FUNDER_ADDRESS=your_funder_address
 | 环境变量 | 说明 | 默认值 |
 |----------|------|--------|
 | `DIRECTION_STRATEGY` | 方向策略 | ta |
-| `MIN_DECISION_CONFIDENCE` | 最低置信度阈值 | 0.30 |
-| `MIN_ABS_SCORE` | 最低得分绝对值 | 2.0 |
-| `DIRECTION_ORDERBOOK_MAX_SUM` | 盘口合计上限 | 1.05 |
+| `MIN_DECISION_CONFIDENCE` | 最低置信度阈值 | 0.30（.env默认0.1） |
+| `MIN_ABS_SCORE` | 最低得分绝对值 | 2.0（.env默认1.0） |
+| `DIRECTION_ORDERBOOK_MAX_SUM` | 盘口合计上限（仅实盘） | 1.05 |
 | `DIRECTION_ONLY_WHEN_BOOK_SUM_LT` | 仅低价差时交易 | 不设限 |
 | `REVERSAL_MIN_ABS_PCT` | 反转最小偏离百分比 | 0.08 |
 | `ORDERBOOK_IMBALANCE_DEPTH` | 失衡检测档位数 | 3 |
@@ -343,6 +343,7 @@ POLY_FUNDER_ADDRESS=your_funder_address
 | `TRADE_TRAIN_JSONL` | 训练数据输出路径 | 不设置 |
 | `DRY_RUN_BANKROLL_FILE` | 干跑存档路径 | dry_run_bankroll.json |
 | `DRY_RUN_HISTORY_MAX` | 流水最大条数 | 2000 |
+| `BOT_TRADES_XLSX` | 干跑 Excel 交易记录路径 | bot_trades.xlsx |
 
 ---
 

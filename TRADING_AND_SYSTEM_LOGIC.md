@@ -24,9 +24,10 @@
 ### 2.1 常量（`bot.py`）
 
 - **`WINDOW = 300`**：每个市场为 **5 分钟**（300 秒）窗口。
-- **`SNIPE_DEADLINE = 5`**：`snipe_loop` 在距收盘 **小于 5 秒** 时退出主循环（不再做常规 2s 轮询），进入收尾逻辑。
-- **`POLL = 2.0`**：狙击阶段内两次 `analyze` 之间的 `sleep` 秒数。
+- **`SNIPE_DEADLINE = 5`**：`snipe_loop` 在距收盘 **小于 5 秒** 时退出狙击循环（不再做轮询）。
+- **`POLL = 0.75`**：狙击阶段内两次 `analyze` 之间的 `sleep` 秒数（新版缩短以更快响应信号）。
 - **`SPIKE_JUMP = 1.5`**：相邻两次 `analyze` 的 `|score|` 差 ≥ 1.5 视为「尖峰」，**立即**返回当前 `res`（见 §6）。
+- **`SNIPE_START`**：距收盘秒数开始进入狙击轮询；代码默认 **20s**，`.env` 默认 **60s**（须 ≥20s 才能保证 Binance K 线有时间获取）。
 - **`MIN_SHARES_POLY = 5`**、`**GTC_LIMIT_PRICE = 0.95**`：无卖单时 GTC 限价买参数（见 §10）。
 
 ### 2.2 当前窗口起点 Unix 秒
@@ -119,25 +120,24 @@ current_window_ts(t=None):
 输入：**`window_open`**（oracle 开盘价）、**`window_close`**（= `close_at` 浮点）、**`mode`**、**`chainlink_feed`**、**`arb_hit`**。
 
 1. 打印狙击参数：狙击提前秒、现价来源、RTDS 状态、模式最低置信度。
-2. **`min_conf = min_confidence_for_mode(mode)`**：safe **0.45**，aggressive **0.35**，degen **0.0**。（**高胜率配置**：原 safe=0.30/aggressive=0.20 偏低，已调高以过滤低质量信号）
+2. **`min_conf = min_confidence_for_mode(mode)`**：safe **0.45**，aggressive **0.35**，degen **0.0**。
 3. **`while True`**：
    - **`t_left = window_close - now()`**。
-   - 若 **`t_left < SNIPE_DEADLINE`**：**`break`** 出循环。
+   - 若 **`t_left <= 0`**：**`break`** 出循环。
    - 若 **`arb_hit` 已 set**：抛 **`ArbitrageCycleDone`**。
-   - 若 **`t_left > ss`**（尚未进入狙击窗口）：**`sleep(max(0.15, min(5.0, t_left - ss)))`**，`continue`。
-   - 第一次进入狙击：打印 **`[狙击] → 狙击开始，距收盘 Xs`**。
+   - **K 线获取（每次迭代都尝试，不限 `t_left`）**：调用 **`fetch_history_candles_before_window(window_start_ms, lookback=120)`** — 直接请求窗口前历史数据；若 Binance 返回空（窗口距今 >~2 分钟），回退：拉最近 120 根过滤掉窗口内的。
+   - 第一次进入狙击：打印 **`[狙击] → 狙击开始，距收盘 Xs，开始分析（K线已获取/K线获取中）`**。
    - **`px = snipe_current_price`** → **`ticks.append(px)`**。
    - 再检查 **`arb_hit`**。
-   - 拉 **`fetch_recent_candles_1m(60)`**，最多 5 次重试（失败静默重试）。
-   - **`res = analyze(candles, tick_prices=ticks[-120:])`**（新版：只用历史 K 线和 tick 数据，不依赖窗口内价格变动）。
+   - **`res = analyze(candles, tick_prices=ticks[-120:])`**（K 线未就绪时返回 `_tick_only_decision`）。
    - 更新 **`best`**：若 `best is None` 或 **`abs(res.score) > abs(best.score)`** 则 **`best = res`**。
-   - **尖峰**：若 **`last_score` 非空** 且 **`abs(res.score - last_score) >= SPIKE_JUMP`**：打印 **`[狙击] 尖峰！Δ=X.X，提前发射`**，**立即 `return res, ticks`**（**不** 检查 `min_conf`）。
-   - **置信度达标**：若 **`res.confidence >= min_conf`**：**`return res, ticks`**。
+   - **尖峰**：若 **`last_score` 非空** 且 **`abs(res.score - last_score) >= SPIKE_JUMP`**：打印 **`[尖峰] Δ=X.X，提前发射`**，**立即 `return res, ticks`**（**不** 检查 `min_conf`）。
+   - **置信度达标**：若 **`kline_fetch_done and res.confidence >= min_conf`**：**`return res, ticks`**（K 线未就绪时继续循环，不提前返回）。
    - **`last_score = res.score`**，**`sleep(POLL)`**。
 
-4. **退出 `while` 后**（因 `t_left < SNIPE_DEADLINE`）：
+4. **退出 `while` 后**（因 `t_left <= 0`）：
    - 若 **`best is None`**：再取一次价与 K 线，**`best = analyze(...)`**。
-   - 若 **`best.confidence < min_conf`**：在 **`details` 中设 `skip_trade=True`**，返回该 **`AnalysisResult`**（**`run_trade_cycle` 会跳过下单**）。
+   - 若 **`best.confidence < min_conf`** 或 **`best.details.get("skip_trade")`**：返回该 **`AnalysisResult`**（**`run_trade_cycle` 会跳过下单**）。
    - 否则 **`return best, ticks`**。
 
 ### 6.1 `snipe_current_price`
@@ -364,7 +364,7 @@ outcome == direction → "100% 胜率"
 | `FIXED_DIRECTIONAL_USD` | 固定方向单名义（优先于模式/Kelly） |
 | `ENABLE_KELLY` | **仅 `"1"`** 启用 Kelly |
 | `KELLY_SCALE` / `KELLY_MODE` | Kelly 参数 |
-| `SNIPE_START` | 狙击提前秒数，夹紧到 [6, 295] |
+| `SNIPE_START` | 狙击提前秒数，夹紧到 [6, 295]（须≥20s保证K线获取） |
 | `SNIPE_PRICE_SOURCE` | oracle \| binance |
 | `USE_CHAINLINK_RTDS` | 关则全程无 RTDS |
 | `POLY_*` / `POLY_CLOB_HOST` | 实盘 CLOB 与签名 |
@@ -404,7 +404,10 @@ outcome == direction → "100% 胜率"
 5. **尖峰** 路径 **不要求** `confidence >= min_conf`。  
 6. **`compare_runs`** 的阈值网格 **≠** `min_confidence_for_mode`。  
 7. **套利** 两腿 FOK **非原子**：可能单边成交，代码已警告需人工处理。  
-8. **结算队列** `_settlement_consumer_loop`：单条任务异常会打印栈并 **吞掉**（不自动重试该条 settle）。结算结果打印为 **`┌─── 结算 XXXX ──────────────────────`** 卡片块（✓/✗ 结果、方向、payout、余额、Binance价格、若bust则打印重置信息）。
+8. **结算队列** `_settlement_consumer_loop`：单条任务异常会打印栈并 **吞掉**（不自动重试该条 settle）。结算结果打印为 **`┌─── 结算 XXXX ──────────────────────`** 卡片块（✓/✗ 结果、方向、payout、余额、Binance价格、若bust则打印重置信息）。  
+9. **干跑跳过盘口检查**：`dry_run=True` 时 `mx_sum`/`only_lt` 过滤被跳过；干跑无真实持仓，不需要流动性闸值。  
+10. **狙击 K 线获取**：Binance 历史 K 线仅保留最近约 2 分钟；窗口距今较旧时，直接历史请求返回空，改用「拉最近 K 线过滤窗口前」的兜底方案。  
+11. **Excel pnl 为累计值**：`bot_trades.xlsx` 中 `pnl = post_settle_bankroll - 会话初始余额`，是**累计**盈亏，不是单笔盈亏。
 
 ---
 
@@ -538,11 +541,12 @@ Playwright 需额外执行：`playwright install chromium`。
 
 ### E.4 狙击节奏与设计取舍
 
-- 默认在距收盘 **`SNIPE_START`（默认 10）秒** 内进入高速轮询（见 **`_snipe_start_s()`** 夹紧范围）。  
-- 轮询间隔 **`POLL=2s`**：每次拉 Binance 最近 60 根 1m K、取现价（oracle 或 binance 见 `SNIPE_PRICE_SOURCE`），把本轮累积的 **`ticks[-120:]`** 喂给 **`analyze`**。  
-- **尖峰**：相邻两次 **`|score|`** 差 **≥ `SPIKE_JUMP`（1.5）** 时 **立即** 采用当前结果下单，**不要求** 达到模式最低置信度。  
-- **置信度达标**则提前返回。  
-- **与旧英文说明的差异（重要）**：旧稿写「T-5 必用 best 信号、绝不跳过」。**当前代码**在因 **`SNIPE_DEADLINE`** 退出循环时，若 **`best.confidence < min_confidence_for_mode(mode)`**，会置 **`skip_trade`**，**`run_trade_cycle` 本窗不下方向单**。degen 模式 **`min_conf=0`**，仍可能在「零置信」边界上下单；safe/aggressive 则严格受阈值约束。
+- 默认在距收盘 **`SNIPE_START`（代码默认 20s，`.env` 默认 60s）** 内进入高速轮询（须 ≥20s 才能保证 Binance K 线有时间获取）。
+- 轮询间隔 **`POLL=0.75s`**：每次调用 **`fetch_history_candles_before_window`** 尝试获取窗口前历史 K 线；若 Binance 历史返回空则用最近 K 线过滤兜底。
+- **K 线获取**：每次狙击迭代都尝试获取，成功一次即止（不再限制 `t_left >= 15s`）。
+- **尖峰**：相邻两次 **`|score|`** 差 **≥ `SPIKE_JUMP`（1.5）** 时 **立即** 采用当前结果下单，**不要求** 达到模式最低置信度。
+- **置信度达标**则提前返回；K 线未就绪时继续循环等待。
+- **与旧英文说明的差异（重要）**：旧稿写「T-5 必用 best 信号、绝不跳过」。**当前代码**在狙击循环退出时（距收盘 ≤5s），若 **`best.confidence < min_conf`** 或 **`best.details.get("skip_trade")`**，会置 **`skip_trade`**，**`run_trade_cycle` 本窗不下方向单**。degen 模式 **`min_conf=0`**，但 `MIN_ABS_SCORE`（默认 2.0）和 `MIN_DECISION_CONFIDENCE`（默认 0.30）仍可能过滤。
 
 ### E.5 七种指标的设计意图（与附录 A 数值对应）
 

@@ -4,7 +4,68 @@
 
 ---
 
-## [Unreleased] v2.0 - 统一回测与实盘逻辑（裸奔版）
+## [Unreleased] v2.1 - 狙击K线获取、结算等待、Excel写入
+
+**目标**：修复 `--once` 模式下狙击 K 线无法获取、结算未完成就退出的问题；新增干跑 Excel 交易记录。
+
+### 改动详情（已完成）
+
+#### 1. K 线获取重构 ✅
+
+**Before**：狙击循环内仅在首次迭代且 `t_left >= 15s` 时尝试获取 K 线；窗口较旧时 Binance 历史请求返回空；不重试。
+
+**After**：
+- 每次狙击循环迭代都尝试获取 K 线（无 `t_left` 限制），成功一次即止
+- Binance 历史请求返回空（窗口距今 >~2 分钟，Binance 不保留）时，回退：拉最近 N 根 K 线，过滤掉窗口内的，只取窗口前的
+- 新增 `fetch_history_candles_before_window(window_start_ms, lookback=120)` 函数
+
+#### 2. --once 干跑等待结算 ✅
+
+**Before**：`QueuedDrySettle` 无等待机制，`_settlement_done_evt` 为 None 时直接退出，结算线程未完成就被中断。
+
+**After**：
+- `QueuedDrySettle` 新增 `settle_done: Optional[threading.Event]` 字段
+- 结算线程在调用 `resolve_window_direction_with_meta` **之前** `set()` 该事件
+- 主线程 `--once` 模式：`evt.wait(timeout=WINDOW+120)` 等待结算完成后再退出
+- 修复 `_apply_queued_dry_settle` 中 `wait_s` 在 `else` 分支外引用的 UnboundLocalError
+
+#### 3. Excel 交易记录 ✅
+
+**Before**：`compare_runs.py` 有 Excel 输出，但 `bot.py` 实盘/干跑无 Excel 记录。
+
+**After**：
+- 每笔结算后写入 `bot_trades.xlsx`（`BOT_TRADES_XLSX` 环境变量可自定义路径）
+- `pnl` = `post_settle_bankroll - 会话初始余额`（累计盈亏，不是单笔）
+- 新建文件用 `Workbook()`，`load_workbook()` 仅用于追加已有文件
+- 防重：同一 `window_ts` 跳过写入
+
+#### 4. 干跑跳过盘口检查 ✅
+
+**Before**：干跑模式下仍执行 `DIRECTION_ORDERBOOK_MAX_SUM` 等盘口过滤，导致大量"盘口不全"/"盘口过贵"跳过。
+
+**After**：`dry_run=True` 时跳过整个盘口检查块（`mx_sum` / `only_lt`）；干跑无真实持仓，不需要流动性闸值。
+
+#### 5. 狙击置信触发修复 ✅
+
+**Before**：`res.confidence >= min_conf` 在 `kline_fetch_done` 为 False 时也触发 `return`，导致 K 线未就绪就退出。
+
+**After**：置信触发条件改为 `kline_fetch_done and res.confidence >= min_conf`，K 线未就绪时继续循环等待。
+
+#### 6. SNIPE_START 默认值调整 ✅
+
+- 代码默认从 `10s` 改为 `20s`（`.env` 默认 `60s`）
+- 理由：需要 ≥20s 才能保证 Binance K 线有时间获取并分析
+
+#### 7. .env 干跑测试参数 ✅
+
+新增（干跑测试用）：
+- `SNIPE_START=60` — 给 K 线足够获取时间
+- `MIN_ABS_SCORE=1.0` — 信号得分阈值（原默认 2.0 偏高）
+- `MIN_DECISION_CONFIDENCE=0.1` — TA 置信度阈值（原默认 0.30 偏高）
+
+---
+
+## [History] v2.0 - 统一回测与实盘逻辑（裸奔版）
 
 **目标**：以回测为基准，让 bot.py 的交易逻辑与 compare_runs.py 完全一致，消除两套逻辑不同导致的胜率差异无法定位问题。
 
