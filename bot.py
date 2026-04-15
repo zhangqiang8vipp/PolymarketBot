@@ -36,6 +36,12 @@ try:
 except ImportError:
     ClobClient = None  # type: ignore
 
+try:
+    from openpyxl import load_workbook, Workbook
+except ImportError:
+    load_workbook = None  # type: ignore
+    Workbook = None  # type: ignore
+
 load_dotenv()
 
 # 结构化/分级日志（控制台 + 可选 LOG_FILE）；关键中文提示仍可用 print。
@@ -115,6 +121,7 @@ def _ensure_utf8_stdio() -> None:
 
 _ensure_utf8_stdio()
 
+_SESSION_INITIAL_BANKROLL: Optional[float] = None  # 会话起始资金（用于 Excel 累计盈亏）
 _PRINT_TS_HOOK = False
 
 
@@ -159,13 +166,14 @@ GTC_LIMIT_PRICE = 0.95
 
 def _snipe_start_s() -> int:
     """
-    距收盘多少秒开始进入狙击轮询（默认 10）。环境变量 SNIPE_START 可改，须大于 SNIPE_DEADLINE。
+    距收盘多少秒开始进入狙击轮询（默认 20）。环境变量 SNIPE_START 可改，须大于 SNIPE_DEADLINE。
+    注意：须 ≥ 20s 才能保证 K 线有时间获取。
     """
-    raw = os.environ.get("SNIPE_START", "10").strip()
+    raw = os.environ.get("SNIPE_START", "20").strip()
     try:
         v = int(round(float(raw)))
     except ValueError:
-        v = 10
+        v = 20
     lo = SNIPE_DEADLINE + 1
     hi = WINDOW - 5
     return max(lo, min(v, hi))
@@ -784,6 +792,22 @@ def fetch_recent_candles_1m(limit: int = 60) -> List[Candle]:
     return fetch_klines_1m("BTCUSDT", start_ms=None, end_ms=None, limit=limit)
 
 
+def fetch_history_candles_before_window(window_start_ms: int, lookback: int = 120) -> List[Candle]:
+    """
+    获取窗口起点之前的指定数量历史 K 线（不含窗口内数据）。
+    优先直接请求历史区间；若 Binance 只返回空（窗口距今过旧/超过 Binance 保留期限），
+    则回退：拉最近 N 根 K 线，过滤掉窗口内的，只取窗口前的。
+    """
+    end_ms = window_start_ms - 1  # 窗口起点之前 1ms
+    start_ms = window_start_ms - lookback * 60_000  # 往前推 lookback 分钟
+    rows = fetch_klines_1m("BTCUSDT", start_ms=start_ms, end_ms=end_ms, limit=lookback)
+    if len(rows) < 2:
+        # Binance 只保留最近 ~2 分钟；窗口较旧时回退到拉最近 K 线过滤
+        raw = fetch_klines_1m("BTCUSDT", start_ms=None, end_ms=None, limit=lookback)
+        rows = [c for c in raw if c.open_time_ms < window_start_ms]
+    return rows
+
+
 def fetch_window_open_price_binance(window_ts: int) -> float:
     # 与 _binance_window_edge_prices 一致：自窗口起点起取 1 根 1m，不设 endTime，避免与 Binance endTime 语义混用。
     rows = fetch_klines_1m("BTCUSDT", start_ms=window_ts * 1000, end_ms=None, limit=1)
@@ -1160,6 +1184,8 @@ class QueuedDrySettle:
     decision_confidence: float
     mode: str
     decide_px: float
+    # dry_run --once 时，结算完成后 set 此事件
+    settle_done: Optional[threading.Event] = None
 
 
 @dataclass(frozen=True)
@@ -1177,6 +1203,8 @@ _settlement_worker: Optional[threading.Thread] = None
 _settlement_worker_mu = threading.Lock()
 _settlement_state: Optional[BotState] = None
 _settlement_feed_cell: List[Optional[Any]] = [None]
+# --once dry_run 时，worker 结算完毕后 set，供主线程等待
+_settlement_done_evt: Optional[threading.Event] = None
 
 
 def min_confidence_for_mode(mode: str) -> float:
@@ -1312,22 +1340,27 @@ def snipe_loop(
         if arb_hit is not None and arb_hit.is_set():
             raise ArbitrageCycleDone
 
-        # K 线获取（持续尝试；已有数据则跳过）
-        # 注意：若距狙击 < 15s 则不再等待（API 延迟会导致超时）
         if not kline_fetch_done:
-            if t_left >= 15.0:
-                for attempt in range(2):
-                    try:
-                        raw = fetch_recent_candles_1m(60)
-                        cand = [c for c in raw if c.open_time_ms < window_start_ms]
-                        if len(cand) >= 2:
-                            candles = cand
-                            kline_fetch_done = True
+            # K 线获取：只要窗口未收盘就持续尝试（成功一次即止）
+            for attempt in range(2):
+                try:
+                    # 优先：直接请求窗口起点前的历史 K 线，保证中途启动也有足够数据
+                    hist = fetch_history_candles_before_window(window_start_ms, lookback=120)
+                    if len(hist) >= 2:
+                        candles = hist
+                        kline_fetch_done = True
                         break
-                    except (requests.RequestException, OSError):
-                        if attempt == 1:
-                            break
-                        time.sleep(0.5)
+                    # 兜底：最近 60 根过滤窗口内的
+                    raw = fetch_recent_candles_1m(60)
+                    cand = [c for c in raw if c.open_time_ms < window_start_ms]
+                    if len(cand) >= 2:
+                        candles = cand
+                        kline_fetch_done = True
+                    break
+                except (requests.RequestException, OSError):
+                    if attempt == 1:
+                        break
+                    time.sleep(0.5)
 
         if not snipe_armed:
             snipe_armed = True
@@ -1348,9 +1381,10 @@ def snipe_loop(
         if best is None or abs(res.score) > abs(best.score):
             best = res
         if last_score is not None and abs(res.score - last_score) >= _spike_jump():
-            print(f"[狙击] 尖峰 Δ={res.score - last_score:+.2f}，提前发射", flush=True)
+            print(f"[尖峰] Δ={res.score - last_score:+.2f}，提前发射", flush=True)
             return res, ticks
-        if res.confidence >= min_conf and kline_fetch_done:
+        # 置信度触发条件：K 线就绪后才判断，未就绪时继续循环等待
+        if kline_fetch_done and res.confidence >= min_conf:
             return res, ticks
         last_score = res.score
         time.sleep(POLL)
@@ -1384,6 +1418,7 @@ def run_trade_cycle(
     dry_run: bool,
     window_ts: int,
     chainlink_feed: Optional[Any] = None,
+    once_mode: bool = False,
 ) -> None:
     close_at = window_ts + WINDOW
     slug = window_slug(window_ts)
@@ -1493,25 +1528,26 @@ def run_trade_cycle(
             return
 
     # ── 盘口检查（复用预取数据；若预取失败则快速重试一次）─────────────────
+    # 注意：干跑时跳过盘口检查——干跑无真实持仓，不需要流动性闸值
     px_decide = ticks[-1] if ticks else snipe_current_price(chainlink_feed)
-    up_ask = up_ask_pre[0] if up_ask_pre[0] is not None else get_best_ask(up_tid, client)
-    down_ask = down_ask_pre[0] if down_ask_pre[0] is not None else get_best_ask(down_tid, client)
+    if not dry_run:
+        up_ask = up_ask_pre[0] if up_ask_pre[0] is not None else get_best_ask(up_tid, client)
+        down_ask = down_ask_pre[0] if down_ask_pre[0] is not None else get_best_ask(down_tid, client)
+        mx_sum = _direction_orderbook_max_sum()
+        if mx_sum is not None:
+            if up_ask is None or down_ask is None:
+                print(f"[窗口 {window_ts}] 跳过：盘口不全", flush=True)
+                return
+            if float(up_ask) + float(down_ask) > mx_sum:
+                print(f"[窗口 {window_ts}] 跳过：盘口过贵 {float(up_ask)+float(down_ask):.3f} > {mx_sum}", flush=True)
+                return
 
-    mx_sum = _direction_orderbook_max_sum()
-    if mx_sum is not None:
-        if up_ask is None or down_ask is None:
-            print(f"[窗口 {window_ts}] 跳过：盘口不全", flush=True)
-            return
-        if float(up_ask) + float(down_ask) > mx_sum:
-            print(f"[窗口 {window_ts}] 跳过：盘口过贵 {float(up_ask)+float(down_ask):.3f} > {mx_sum}", flush=True)
-            return
-
-    only_lt = _direction_only_when_book_sum_lt()
-    if only_lt is not None and up_ask is not None and down_ask is not None:
-        s = float(up_ask) + float(down_ask)
-        if s >= only_lt:
-            print(f"[窗口 {window_ts}] 跳过：低价差 {s:.3f} >= {only_lt}", flush=True)
-            return
+        only_lt = _direction_only_when_book_sum_lt()
+        if only_lt is not None and up_ask is not None and down_ask is not None:
+            s = float(up_ask) + float(down_ask)
+            if s >= only_lt:
+                print(f"[窗口 {window_ts}] 跳过：低价差 {s:.3f} >= {only_lt}", flush=True)
+                return
 
     if _direction_strategy() == "imbalance":
         depth = _imbalance_depth()
@@ -1660,6 +1696,11 @@ def run_trade_cycle(
 
     if dry_run:
         settle_after = float(os.environ.get("DRY_RUN_SETTLE_AFTER_S", "2"))
+        settle_done_evt: Optional[threading.Event] = None
+        if once_mode:
+            settle_done_evt = threading.Event()
+            global _settlement_done_evt
+            _settlement_done_evt = settle_done_evt
         job = QueuedDrySettle(
             window_ts=int(window_ts),
             slug=slug,
@@ -1674,6 +1715,7 @@ def run_trade_cycle(
             decision_confidence=float(decision.confidence),
             mode=str(mode),
             decide_px=float(px_decide),
+            settle_done=settle_done_evt,
         )
         enqueue_settlement(job, state, chainlink_feed)
         with _BOT_STATE_LOCK:
@@ -1746,6 +1788,120 @@ def _dry_run_state_path() -> str:
         "DRY_RUN_BANKROLL_FILE",
         os.path.join(os.path.dirname(os.path.abspath(__file__)), "dry_run_bankroll.json"),
     )
+
+
+def _bot_trades_xlsx_path() -> str:
+    return os.environ.get(
+        "BOT_TRADES_XLSX",
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "bot_trades.xlsx"),
+    )
+
+
+def _append_trade_to_xlsx(
+    window_ts: int,
+    slug: str,
+    mode: str,
+    direction: int,
+    bet: float,
+    entry: float,
+    actual: int,
+    win: bool,
+    settle_payout: float,
+    post_bet_bankroll: float,
+    post_settle_bankroll: float,
+    settle_method: str,
+    decide_px: float,
+    window_open: float,
+    score: float,
+    confidence: float,
+) -> None:
+    """
+    将一笔干跑结算记录追加到 bot_trades.xlsx。
+    如果文件不存在则创建并写入表头；如果已存在则追加行。
+    同一 window_ts 不会重复写入（防多次运行重复追加）。
+    盈亏（pnl）= 当前余额 - 历史起始余额（累计），不是单笔 payout。
+    """
+    if load_workbook is None:
+        return
+    path = _bot_trades_xlsx_path()
+    # 累计盈亏基准 = 会话起始资金（main() 启动时设置）
+    global _SESSION_INITIAL_BANKROLL
+    initial_bankroll = _SESSION_INITIAL_BANKROLL or 50.0
+    try:
+        if os.path.exists(path):
+            wb = load_workbook(path)
+            ws = wb.active
+            # 防重：如果最后一行的 window_ts 等于当前 window_ts，跳过
+            if ws.max_row > 1:
+                last_ts = ws.cell(row=ws.max_row, column=1).value
+                if last_ts == window_ts:
+                    wb.close()
+                    return
+            else:
+                wb.close()
+                return
+        else:
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Bot Trades"
+            ws.append([
+                "window_ts",
+                "窗口时间",
+                "slug",
+                "mode",
+                "direction",
+                "方向",
+                "bet",
+                "entry",
+                "actual",
+                "结果",
+                "win",
+                "胜负",
+                "settle_payout",
+                "post_bet_bankroll",
+                "post_settle_bankroll",
+                "settle_method",
+                "decide_px",
+                "window_open",
+                "score",
+                "confidence",
+                "pnl",
+                "初始资金",
+            ])
+            ws.freeze_panes = "A2"
+
+        from datetime import datetime as dt_cls
+        dt_str = dt_cls.utcfromtimestamp(window_ts).strftime("%Y-%m-%d %H:%M:%S")
+        # 累计盈亏 = 当前余额 - 历史起始余额
+        cum_pnl = post_settle_bankroll - initial_bankroll
+        ws.append([
+            window_ts,
+            dt_str,
+            slug,
+            mode,
+            direction,
+            "涨" if direction == 1 else "跌",
+            round(bet, 4),
+            round(entry, 4),
+            actual,
+            "涨" if actual == 1 else "跌",
+            win,
+            "赢" if win else "输",
+            round(settle_payout, 4),
+            round(post_bet_bankroll, 4),
+            round(post_settle_bankroll, 4),
+            settle_method,
+            round(decide_px, 2),
+            round(window_open, 2),
+            round(score, 2),
+            round(confidence, 2),
+            round(cum_pnl, 4),
+            round(initial_bankroll, 4),
+        ])
+        wb.save(path)
+        wb.close()
+    except Exception:
+        pass
 
 
 def _dry_run_history_max() -> int:
@@ -1903,12 +2059,18 @@ def _append_trade_train_record(rec: Dict[str, Any]) -> None:
 
 
 def _apply_queued_dry_settle(job: QueuedDrySettle, state: BotState) -> None:
-    wait_s = max(0.1, job.close_at - now() + job.settle_after)
-    print(
-        f"[干跑/队列] slug={job.slug} 约 {wait_s:.1f}s 后判定输赢并写档…",
+    # 若有 settle_done 事件，必须等待窗口真正收盘才能结算
+    if job.settle_done is not None:
+        deadline = job.close_at + job.settle_after
+        while now() < deadline:
+            time.sleep(max(0.05, deadline - now()))
+    else:
+        wait_s = max(0.1, job.close_at - now() + job.settle_after)
+        print(
+            f"[干跑/队列] slug={job.slug} 约 {wait_s:.1f}s 后判定输赢并写档…",
         flush=True,
-    )
-    time.sleep(wait_s)
+        )
+        time.sleep(wait_s)
     feed = _settlement_feed_cell[0]
     settle_meta: Dict[str, Any] = {}
     actual = 0
@@ -2014,6 +2176,26 @@ def _apply_queued_dry_settle(job: QueuedDrySettle, state: BotState) -> None:
             },
         )
         _save_dry_run_state(state)
+        _append_trade_to_xlsx(
+            window_ts=job.window_ts,
+            slug=job.slug,
+            mode=job.mode,
+            direction=job.direction,
+            bet=job.bet,
+            entry=job.entry,
+            actual=actual,
+            win=win,
+            settle_payout=settle_payout,
+            post_bet_bankroll=post_bet_bankroll,
+            post_settle_bankroll=state.bankroll,
+            settle_method=settle_method,
+            decide_px=job.decide_px,
+            window_open=job.window_open,
+            score=job.decision_score,
+            confidence=job.decision_confidence,
+        )
+        if job.settle_done is not None:
+            job.settle_done.set()
 
     # ── 结算结果 ──────────────────────────────────────────
     dir_actual = "涨" if actual == 1 else "跌"
@@ -2170,6 +2352,8 @@ def main() -> None:
     min_bet = float(os.environ.get("MIN_BET", "1.0"))
     if args.dry_run:
         br, pr, tr, hist, hseq = _load_dry_run_state(starting, starting, 0)
+        global _SESSION_INITIAL_BANKROLL
+        _SESSION_INITIAL_BANKROLL = br  # Excel 累计盈亏基准
         state = BotState(
             bankroll=br,
             principal=pr,
@@ -2260,17 +2444,21 @@ def main() -> None:
             continue
 
         try:
-            run_trade_cycle(client, state, args.mode, min_bet, args.dry_run, wts, chainlink_feed)
+            once_mode = bool(args.once and args.dry_run)
+            run_trade_cycle(client, state, args.mode, min_bet, args.dry_run, wts, chainlink_feed, once_mode=once_mode)
         except Exception as e:
             print(f"[错误] run_trade_cycle: {e}", flush=True)
             traceback.print_exc()
             time.sleep(5.0)
 
         if args.once:
-            # dry_run 时 queued item 需要等结算线程跑完才知盈亏
-            print("[主循环] --once 退出中，等待结算队列处理完毕…", flush=True)
             if args.dry_run:
-                _drain_settlement_queue(args.dry_run)
+                evt = _settlement_done_evt
+                if evt is not None:
+                    print(f"[主循环] --once 干跑，等待结算完成（最多 {WINDOW + 120}s）…", flush=True)
+                    evt.wait(timeout=float(WINDOW + 120))
+                else:
+                    print("[主循环] --once 干跑，无待结算订单，直接退出", flush=True)
             break
         if max_trades and state.trades >= max_trades:
             break
