@@ -15,6 +15,7 @@ from typing import Any, List, Optional
 
 @dataclass
 class Candle:
+    open_time_ms: int
     open: float
     high: float
     low: float

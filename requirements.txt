@@ -1,6 +1,32 @@
+# PolymarketBot 依赖列表
+# 安装命令: pip install -r requirements.txt
+
+# Polymarket CLOB API 客户端（实盘交易必需）
 py-clob-client==0.34.5
+
+# 环境变量管理
 python-dotenv>=1.0.0
+
+# HTTP 请求（数据获取）
 requests>=2.31.0
+
+# Playwright 自动化（auto_claim.py 赎回脚本）
 playwright>=1.40.0
+
+# Excel 读写（回测结果导出）
 openpyxl>=3.1.0
+
+# WebSocket 客户端（RTDS 实时数据）
 websocket-client>=1.6.0
+
+# ============================================
+# 可选依赖
+# ============================================
+
+# 开发/测试用
+# pytest>=7.0.0
+# black>=23.0.0
+# mypy>=1.0.0
+
+# 如需安装 Playwright 浏览器（首次运行 auto_claim.py 前执行）
+# playwright install chromium

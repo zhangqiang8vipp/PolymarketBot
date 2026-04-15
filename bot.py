@@ -421,6 +421,9 @@ def _min_abs_score() -> float:
         return max(0.0, float(raw))
     except ValueError:
         return 2.0
+
+
+def _spike_jump() -> float:
     """SPIKE_JUMP：尖峰阈值；设为 999 等可实质关闭尖峰提前下单。"""
     raw = os.environ.get("SPIKE_JUMP", "").strip()
     if not raw:
@@ -725,117 +728,38 @@ def log_up_down_ask_spread(
     state: BotState,
     silent: bool = False,
 ) -> bool:
-    """
-    Up/Down 双边 best ask 检测。
-    - ENABLE_ARBITRAGE_LOG=1：打印日志与告警。
-    - ENABLE_ARBITRAGE_TRADE=1 且非 dry-run、有 client：当 sum < ARBITRAGE_SUM_ALERT 时双边 FOK；
-      两腿都成功则扣减 bankroll 并返回 True（本窗口跳过方向单）。
-    silent=True：周期性轮询时少打常规 [套利日志]，仍打 [套利告警] 与下单相关输出。
-    """
-    log_ok = _enable_arbitrage_log()
-    trade_ok = _enable_arbitrage_trade() and client is not None and not dry_run
-    if not log_ok and not trade_ok:
+    """Up/Down 双边 best ask 检测。套利条件触发时返回 True（跳过方向单）。"""
+    if not _enable_arbitrage_log() and not _enable_arbitrage_trade():
         return False
 
-    thresh = _arbitrage_sum_alert()
     up_ask = get_best_ask(up_tid, client)
     down_ask = get_best_ask(down_tid, client)
     if up_ask is None or down_ask is None:
-        if log_ok and not silent:
-            print(
-                f"[套利日志] 窗口={window_ts} "
-                f"涨卖一={up_ask} 跌卖一={down_ask}（盘口不全，跳过价差合计）"
-            )
-        elif log_ok and silent:
-            # 后台轮询时默认也打一行，否则长时间无输出会误以为线程未跑
-            print(
-                f"[套利/后台] 窗口={window_ts} 盘口不全 涨卖一={up_ask} 跌卖一={down_ask} "
-                f"（检查 token / CLOB_HOST / 网络；仍会继续轮询）",
-                flush=True,
-            )
         return False
 
     total = up_ask + down_ask
-    edge = 1.0 - total
-    if log_ok and silent:
-        if os.environ.get("ARBITRAGE_POLL_SUMMARY", "1").strip().lower() not in (
-            "0",
-            "false",
-            "no",
-            "off",
-        ):
-            print(
-                f"[套利/后台] 窗口={window_ts} "
-                f"涨卖一={up_ask:.4f} 跌卖一={down_ask:.4f} 合计={total:.4f} "
-                f"(告警阈值合计<{thresh:.4f})；ARBITRAGE_POLL_SUMMARY=0 可关闭本行",
-                flush=True,
-            )
-        else:
-            print(
-                f"[套利/后台] 窗口={window_ts} "
-                f"涨卖一={up_ask:.4f} 跌卖一={down_ask:.4f} 合计={total:.4f}（简要行已关，此为心跳）",
-                flush=True,
-            )
-    if log_ok and not silent:
-        print(
-            f"[套利日志] 窗口={window_ts} "
-            f"涨卖一={up_ask:.4f} 跌卖一={down_ask:.4f} 合计={total:.4f} "
-            f"相对1.00的隐含优势={edge * 100:+.2f}% 告警阈值(合计低于)={thresh:.4f}"
-        )
-
-    if total >= thresh:
+    if total >= _arbitrage_sum_alert():
         return False
 
-    if log_ok:
-        extra = ""
-        if trade_ok:
-            extra = " 已开启套利实盘开关(ENABLE_ARBITRAGE_TRADE=1)：若资金足够可能自动下双边 FOK。"
-        print(
-            f"[套利告警] 合计={total:.4f} < {thresh:.4f} "
-            f"（扣费前相对 1.00 约 {edge * 100:.2f}% 优势）{extra}"
-        )
+    edge = 1.0 - total
+    trade_ok = _enable_arbitrage_trade() and client is not None and not dry_run
+    if not silent:
+        print(f"[套利] sum={total:.4f} edge={edge*100:+.2f}% | {'实盘' if trade_ok else '日志'}", flush=True)
 
     if not trade_ok:
-        if _enable_arbitrage_trade() and dry_run:
-            print("[套利交易] 已跳过：干跑模式（不下真实单）")
-        elif _enable_arbitrage_trade() and client is None:
-            print("[套利交易] 已跳过：无 CLOB 客户端（未连接实盘）")
         return False
 
     bet = _arbitrage_trade_usd()
     with _BOT_STATE_LOCK:
         if state.bankroll < bet:
-            print(f"[套利交易] 已跳过：资金 {state.bankroll:.4f} < 所需 {bet:.4f}")
             return False
-
-    est = edge * bet
-    print(
-        f"[套利交易] 正在下双边 FOK，合计美元={bet:.4f} "
-        f"（每边 {bet/2:.4f}）估算优势(美元)~{est:.4f}（粗略，未计手续费/滑点）"
-    )
     if execute_arbitrage_trade(client, up_tid, down_tid, bet):
         with _BOT_STATE_LOCK:
             state.bankroll -= bet
             state.trades += 1
-        print(f"[套利交易] 完成；资金余额->{state.bankroll:.4f}")
+        print(f"[套利] 双边FOK ${bet:.4f} 完成，余额={state.bankroll:.4f}", flush=True)
         return True
     return False
-
-
-def _rtds_snipe_status_suffix(chainlink_feed: Optional[Any]) -> str:
-    """狙击阶段日志用：RTDS 是否在喂数。"""
-    if chainlink_feed is None:
-        return "RTDS=未接"
-    stats = getattr(chainlink_feed, "buffer_stats", None)
-    if not callable(stats):
-        return "RTDS=已接（无 buffer_stats）"
-    n, mn, mx, lp = stats()
-    if n <= 0:
-        return "RTDS=已接但缓冲 tick=0（oracle 现价可能走 Binance）"
-    return (
-        f"RTDS=已接 tick={n} 最新oracle≈{lp:.2f} "
-        f"payload时间戳ms∈[{mn},{mx}]"
-    )
 
 
 def snipe_current_price(chainlink_feed: Optional[Any]) -> float:
@@ -1331,24 +1255,22 @@ def place_buy_gtc_095(client: Any, token_id: str, min_shares: int = MIN_SHARES_P
 
 
 def snipe_loop(
+    window_ts: int,
     window_open: float,
     window_close: float,
     mode: str,
     chainlink_feed: Optional[Any] = None,
     arb_hit: Optional[threading.Event] = None,
 ) -> Tuple[AnalysisResult, List[float]]:
+    """狙击循环：只取窗口开始前的 K 线做 TA，与 compare_runs.py 逻辑一致。"""
     ss = _snipe_start_s()
-    src = _snipe_price_source()
-    print(
-        f"[狙击] 狙击提前{ss}s | 现价={src} | {rtds_sfx} | "
-        f"最低置信度={min_confidence_for_mode(mode):.2f}",
-        flush=True,
-    )
     min_conf = min_confidence_for_mode(mode)
     best: Optional[AnalysisResult] = None
     last_score: Optional[float] = None
     ticks: List[float] = []
     snipe_armed = False
+    # 窗口开始的毫秒时间戳，用于过滤掉窗口期内的 K 线
+    window_start_ms = window_ts * 1000
     while True:
         t_left = window_close - now()
         if t_left < SNIPE_DEADLINE:
@@ -1360,7 +1282,7 @@ def snipe_loop(
             continue
         if not snipe_armed:
             snipe_armed = True
-            print(f"[狙击] → 狙击开始，距收盘 {t_left:.1f}s", flush=True)
+            print(f"[狙击] 窗口{window_ts} | 距收盘 {t_left:.1f}s，开始分析", flush=True)
         px = snipe_current_price(chainlink_feed)
         ticks.append(px)
         if arb_hit is not None and arb_hit.is_set():
@@ -1374,11 +1296,17 @@ def snipe_loop(
                 if attempt >= 4:
                     raise
                 time.sleep(1.0 + float(attempt))
-        res = analyze(window_open, px, candles, tick_prices=ticks[-120:])
+        # 过滤掉窗口开始后的 K 线，只留决策点之前的历史数据
+        candles = [c for c in candles if c.open_time_ms < window_start_ms]
+        if len(candles) < 2:
+            time.sleep(POLL)
+            continue
+        res = analyze(candles, tick_prices=ticks[-120:])
+        print(f"[狙击] 窗口{window_ts} | score={res.score:+.2f} conf={res.confidence:.2f} dir={'Up' if res.direction>0 else 'Dn'}", flush=True)
         if best is None or abs(res.score) > abs(best.score):
             best = res
         if last_score is not None and abs(res.score - last_score) >= _spike_jump():
-            print(f"[狙击] 尖峰！Δ={res.score - last_score:.2f}，提前发射", flush=True)
+            print(f"[狙击] 尖峰 Δ={res.score - last_score:+.2f}，提前发射", flush=True)
             return res, ticks
         if res.confidence >= min_conf:
             return res, ticks
@@ -1395,7 +1323,8 @@ def snipe_loop(
                 if attempt >= 4:
                     raise
                 time.sleep(1.0 + float(attempt))
-        best = analyze(window_open, px, candles2, tick_prices=ticks)
+        candles2 = [c for c in candles2 if c.open_time_ms < window_start_ms]
+        best = analyze(candles2, tick_prices=ticks)
     if best.confidence < min_conf:
         det = dict(best.details)
         det["skip_trade"] = True
@@ -1424,13 +1353,7 @@ def run_trade_cycle(
     slug = window_slug(window_ts)
     up_tid, down_tid = parse_gamma_tokens(slug)
 
-    print(
-        f"[======== 窗口 {window_ts} ========]",
-        f"slug={slug} | dry_run={dry_run} | client={'有' if client else '无'}",
-        f"狙击提前={_snipe_start_s()}s | 最低置信={min_confidence_for_mode(mode):.2f}",
-        f"套利={_enable_arbitrage_log()}",
-        sep="\n  ", flush=True,
-    )
+    print(f"[窗口 {window_ts}] slug={slug} | {mode} | {'干跑' if dry_run else '实盘'} | 开盘={window_open:.2f}", flush=True)
 
     # ── 套利探测（周期开头）───────────────────────────────
     if log_up_down_ask_spread(window_ts, up_tid, down_tid, client, dry_run, state):
@@ -1446,8 +1369,8 @@ def run_trade_cycle(
 
     # ── 长休眠至狙击 ──────────────────────────────────
     sleep_s = close_at - _snipe_start_s() - now()
-    if sleep_s > 2.0:
-        print(f"  距狙击还有 {sleep_s:.0f}s，休眠中…", flush=True)
+    if sleep_s > 10:
+        print(f"[窗口 {window_ts}] 距狙击 {sleep_s:.0f}s，休眠…", flush=True)
     if sleep_s > 0:
         time.sleep(sleep_s)
 
@@ -1475,12 +1398,13 @@ def run_trade_cycle(
 
         arb_thread = threading.Thread(target=_arb_worker, name="arb-poll", daemon=True)
         arb_thread.start()
-    elif poll <= 0 and (log_a or _enable_arbitrage_trade()):
-        print("  套利: ARBITRAGE_POLL_S=0，仅周期头测一次", flush=True)
+    if poll <= 0 and (log_a or _enable_arbitrage_trade()):
+        pass  # ARBITRAGE_POLL_S=0，套利仅在周期头测一次，不单独打日志
 
     # ── 狙击循环 ──────────────────────────────────────
     try:
         decision, ticks = snipe_loop(
+            window_ts,
             window_open,
             float(close_at),
             mode,
@@ -1496,15 +1420,12 @@ def run_trade_cycle(
 
     # ── 方向过滤 ─────────────────────────────────────
     if decision.details.get("skip_trade"):
-        print(
-            f"  → 跳过：狙击末置信 {decision.confidence:.2f} < {min_confidence_for_mode(mode):.2f}",
-            flush=True,
-        )
+        print(f"[窗口 {window_ts}] 跳过：置信不足 {decision.confidence:.2f} < {min_confidence_for_mode(mode):.2f}", flush=True)
         return
 
     with _BOT_STATE_LOCK:
         if _loss_streak_should_pause(state):
-            print("  → 跳过：连亏冷却", flush=True)
+            print(f"[窗口 {window_ts}] 跳过：连亏冷却", flush=True)
             return
 
     # ── 盘口检查 ────────────────────────────────────
@@ -1515,17 +1436,17 @@ def run_trade_cycle(
     mx_sum = _direction_orderbook_max_sum()
     if mx_sum is not None:
         if up_ask is None or down_ask is None:
-            print("  → 跳过：盘口不全", flush=True)
+            print(f"[窗口 {window_ts}] 跳过：盘口不全", flush=True)
             return
         if float(up_ask) + float(down_ask) > mx_sum:
-            print(f"  → 跳过：盘口合计 {float(up_ask)+float(down_ask):.3f} > {mx_sum}", flush=True)
+            print(f"[窗口 {window_ts}] 跳过：盘口过贵 {float(up_ask)+float(down_ask):.3f} > {mx_sum}", flush=True)
             return
 
     only_lt = _direction_only_when_book_sum_lt()
     if only_lt is not None and up_ask is not None and down_ask is not None:
         s = float(up_ask) + float(down_ask)
         if s >= only_lt:
-            print(f"  → 跳过：盘口合计 {s:.3f} ≥ {only_lt}", flush=True)
+            print(f"[窗口 {window_ts}] 跳过：低价差 {s:.3f} >= {only_lt}", flush=True)
             return
 
     if _direction_strategy() == "imbalance":
@@ -1533,12 +1454,12 @@ def run_trade_cycle(
         imbu = get_orderbook_imbalance(up_tid, client, depth)
         imbd = get_orderbook_imbalance(down_tid, client, depth)
         if imbu is None or imbd is None:
-            print("  → 跳过：无法读取盘口失衡", flush=True)
+            print(f"[窗口 {window_ts}] 跳过：无法读取盘口失衡", flush=True)
             return
         th_imb = _imbalance_threshold()
         d = decide_from_imbalance(imbu, imbd, th_imb)
         if d == 0:
-            print("  → 跳过：无明显单侧优势", flush=True)
+            print(f"[窗口 {window_ts}] 跳过：无明显单侧优势", flush=True)
             return
         syn_conf = min(1.0, max(abs(imbu), abs(imbd)) / max(th_imb, 1e-6))
         decision = replace(
@@ -1553,12 +1474,11 @@ def run_trade_cycle(
                 "imb_down": float(imbd),
             },
         )
-        print(f"  方向=imbalance Up={imbu:.3f} Down={imbd:.3f} 阈={th_imb}", flush=True)
     elif _direction_strategy() == "reversal":
         th = _reversal_min_abs_pct()
         d = decide_reversal_direction(window_open, px_decide, min_abs_pct=th)
         if d == 0:
-            print(f"  → 跳过：反转偏离 |pct|={abs((px_decide-window_open)/window_open*100):.4f}% ≤ {th}%", flush=True)
+            print(f"[窗口 {window_ts}] 跳过：反转偏离不足", flush=True)
             return
         w_pct_r = (px_decide - window_open) / window_open * 100.0
         syn_conf = min(1.0, abs(w_pct_r) / max(th, 1e-9))
@@ -1573,15 +1493,14 @@ def run_trade_cycle(
                 "reversal_w_pct": w_pct_r,
             },
         )
-        print(f"  方向=reversal w_pct={w_pct_r:.4f}%", flush=True)
     else:
         min_dc = _min_decision_confidence()
         min_score = _min_abs_score()
         if min_score > 0.0 and abs(float(decision.score)) < min_score:
-            print(f"  → 跳过：|score| {abs(decision.score):.2f} < {min_score}", flush=True)
+            print(f"[窗口 {window_ts}] 跳过：|score| {abs(decision.score):.2f} < {min_score}", flush=True)
             return
         if min_dc > 0.0 and float(decision.confidence) < min_dc:
-            print(f"  → 跳过：置信度 {decision.confidence:.2f} < {min_dc:.2f}", flush=True)
+            print(f"[窗口 {window_ts}] 跳过：置信度 {decision.confidence:.2f} < {min_dc:.2f}", flush=True)
             return
 
     # ── 计算下注金额 ─────────────────────────────────
@@ -1591,7 +1510,7 @@ def run_trade_cycle(
     if _use_book_ask_for_entry():
         entry = entry_from_best_asks(int(decision.direction), up_ask, down_ask)
         if entry is None or entry > 0.97:
-            print(f"  → 跳过：入场价 {entry} 不可用或过贵", flush=True)
+            print(f"[窗口 {window_ts}] 跳过：入场价 {entry:.3f} 不可用或过贵", flush=True)
             return
     else:
         entry = directional_entry_from_window_pct(int(decision.direction), w_pct)
@@ -1601,14 +1520,14 @@ def run_trade_cycle(
     if mwall is not None:
         tl = float(close_at) - now()
         if tl < float(mwall):
-            print(f"  → 跳过：距收盘 {tl:.1f}s < {mwall}s", flush=True)
+            print(f"[窗口 {window_ts}] 跳过：距收盘 {tl:.1f}s < {mwall}s", flush=True)
             return
 
     if _use_fair_prob_edge():
         fair = estimate_fair_prob(decision.confidence, int(decision.direction))
         ok_e, edgev = has_price_edge(int(decision.direction), float(entry), fair, _min_price_edge())
         if not ok_e:
-            print(f"  → 跳过：无概率优势 edge={edgev:.4f}", flush=True)
+            print(f"[窗口 {window_ts}] 跳过：无概率优势 edge={edgev:.4f}", flush=True)
             return
         edge_for_sizing = float(edgev)
 
@@ -1616,7 +1535,7 @@ def run_trade_cycle(
     fix_usd = _fixed_directional_usd()
     with _BOT_STATE_LOCK:
         if state.bankroll < min_bet:
-            print(f"  → 跳过：资金 {state.bankroll:.2f} < 最小 {min_bet}", flush=True)
+            print(f"[窗口 {window_ts}] 跳过：资金不足 {state.bankroll:.2f} < {min_bet}", flush=True)
             return
         if fix_usd is not None:
             bet = min(fix_usd, cap_mx or float("inf"), state.bankroll)
@@ -1642,18 +1561,8 @@ def run_trade_cycle(
             if cap_mx is not None and raw_bet > cap_mx:
                 pass  # 已在下注行打印
 
-    sig_cn = "涨(Up)" if token_up else "跌(Down)"
-    print(
-        f"  ┌─── 交易信号 ──────────────────────────────", flush=True)
-    print(
-        f"  │ 方向={sig_cn}  得分={decision.score:.2f}  置信={decision.confidence:.2f}  "
-        f"入场={entry:.3f}  下注=${bet:.2f}", flush=True)
-    print(
-        f"  │ BTC 现价={px_decide:.2f}  窗口偏离={w_pct:.4f}%  窗口开={window_open:.2f}", flush=True)
-    print(
-        f"  │ 模式={mode}  dry_run={dry_run}", flush=True)
-    print(
-        f"  └─────────────────────────────────────────────", flush=True)
+    sig_cn = "涨" if token_up else "跌"
+    print(f"[信号] {sig_cn} | score={decision.score:+.2f} conf={decision.confidence:.2f} | 入场={entry:.3f} 下注=${bet:.2f} | 偏离={w_pct:+.3f}%", flush=True)
 
     # ── 实盘下单 ─────────────────────────────────────
     if not dry_run and client is not None:
@@ -1739,86 +1648,33 @@ def run_trade_cycle(
 
 
 def print_run_config(args: argparse.Namespace, starting: float, min_bet: float) -> None:
-    """启动时打印关键配置（避免跑错环境）。"""
+    """启动时打印关键配置（避免跑错环境）。只展示用户最关心的核心配置。"""
     arb_usd = _arbitrage_trade_usd()
     cap_dir = _max_directional_usd()
-    cap_txt = f"{cap_dir:.4f}" if cap_dir is not None else "未设置"
     fix_d = _fixed_directional_usd()
-    fix_txt = f"{fix_d:.4f}" if fix_d is not None else "未设置"
-    log_ts_on = os.environ.get("LOG_TS_MS", "1").strip().lower() not in ("0", "false", "no", "off")
-    lines = [
-        "======== 机器人运行配置 ========",
-        f"干跑(dry_run)={args.dry_run}  模式(mode)={args.mode}",
-        f"起始资金(STARTING_BANKROLL)={starting}  最小下单(MIN_BET)={min_bet}",
-        f"狙击现价来源(SNIPE_PRICE_SOURCE)={_snipe_price_source()}  狙击提前秒数(SNIPE_START)={_snipe_start_s()}",
-        f"使用 Chainlink RTDS(USE_CHAINLINK_RTDS)={os.environ.get('USE_CHAINLINK_RTDS', '1')}；"
-        "单独测 RTDS：`python chainlink_rtds.py`；开盘价回退诊断：RTDS_FALLBACK_DEBUG=1；"
-        f"开盘 tick 最大 payload 滞后毫秒(RTDS_OPEN_MAX_PAYLOAD_LAG_MS)="
-        f"{os.environ.get('RTDS_OPEN_MAX_PAYLOAD_LAG_MS', '12000')}（0/off=关闭；单位毫秒，默认≈12s）；"
-        f"晚到仍用 Chainlink 开盘价(RTDS_OPEN_ACCEPT_LATE_TICK)={_rtds_open_accept_late_tick()}；"
-        f"起点前回补最大提前毫秒(RTDS_OPEN_FALLBACK_MAX_MS)="
-        f"{os.environ.get('RTDS_OPEN_FALLBACK_MAX_MS', '30000')}；"
-        f"RTDS 看门狗「久未写入btc/usd」秒(RTDS_AUTO_RECONNECT_STALE_S)="
-        f"{os.environ.get('RTDS_AUTO_RECONNECT_STALE_S', '300')}（高胜率默认300s；0=关；不以 payload 墙钟滞后为准） "
-        f"最小间隔(RTDS_AUTO_RECONNECT_MIN_INTERVAL_S)="
-        f"{os.environ.get('RTDS_AUTO_RECONNECT_MIN_INTERVAL_S', '45')} "
-        f"on_open 后宽限(RTDS_WATCHDOG_GRACE_S)={os.environ.get('RTDS_WATCHDOG_GRACE_S', '40')}；"
-        f"重连时清缓冲(RTDS_RECONNECT_CLEAR_BUFFER)={os.environ.get('RTDS_RECONNECT_CLEAR_BUFFER', '0')}(高胜率默认0=保留缓冲)",
-        f"套利仅日志(ENABLE_ARBITRAGE_LOG)={_enable_arbitrage_log()}  套利合计告警阈值(ARBITRAGE_SUM_ALERT)={_arbitrage_sum_alert():.4f}",
-        f"套利实盘(ENABLE_ARBITRAGE_TRADE)={_enable_arbitrage_trade()}  "
-        f"套利双边合计美元(解析后)={arb_usd:.4f}",
-        f"套利轮询间隔秒(ARBITRAGE_POLL_S)={_arbitrage_poll_interval_s():g}（0=仅周期开头测一次）",
-        f"方向单上限(MAX_USD)={cap_txt}",
-        f"固定方向单名义(FIXED_DIRECTIONAL_USD)={fix_txt}",
-        f"日志毫秒时间戳(LOG_TS_MS)={'开' if log_ts_on else '关'}",
-        f"Kelly 方向单(ENABLE_KELLY)={_enable_kelly()}  Kelly 乘子(KELLY_SCALE)={_kelly_scale():.4f}",
-        f"实盘收盘赎回提醒延迟秒(LIVE_REDEEM_HINT_AFTER_S)="
-        f"{float(os.environ.get('LIVE_REDEEM_HINT_AFTER_S', '2')):g}（结算队列打印）",
-        f"Python logging: LOG_LEVEL={os.environ.get('LOG_LEVEL', 'INFO')} 可选 LOG_FILE=路径；"
-        f"WEBSOCKET_LOG=1 才打印 websocket-client 断线/重连（默认静默）",
-        f"训练 JSONL(TRADE_TRAIN_JSONL)="
-        f"{_trade_train_jsonl_path() or '未设'}（每笔结算追加一行，含 settle_meta）",
-        f"套利后台简要行(ARBITRAGE_POLL_SUMMARY)="
-        f"{'关' if os.environ.get('ARBITRAGE_POLL_SUMMARY', '1').strip().lower() in ('0', 'false', 'no', 'off') else '开'}"
-        f"（关时仍每轮一条短心跳）；周期内日志前缀：[周期] [套利/后台] [狙击]",
-        f"仅低价差才方向 DIRECTION_ONLY_WHEN_BOOK_SUM_LT={os.environ.get('DIRECTION_ONLY_WHEN_BOOK_SUM_LT', '') or '未设(不关)'}",
-        f"方向逻辑 DIRECTION_STRATEGY={_direction_strategy()}  REVERSAL_MIN_ABS_PCT={_reversal_min_abs_pct()}  "
-        f"失衡深度 ORDERBOOK_IMBALANCE_DEPTH={_imbalance_depth()}  IMBALANCE_THRESHOLD={_imbalance_threshold()}",
-        f"概率优势 USE_FAIR_PROB_EDGE={_use_fair_prob_edge()}  MIN_PRICE_EDGE={_min_price_edge()}",
-        f"edge 仓位 USE_EDGE_POSITION_SIZING={_use_edge_position_sizing()}  "
-        f"EDGE_SIZING_BANKROLL_FRAC={_edge_sizing_bankroll_frac()}  EDGE_SIZING_EDGE_SCALE={_edge_sizing_edge_scale()}",
-        f"收盘前时间闸 MIN_SECONDS_BEFORE_CLOSE_FOR_TRADE="
-        f"{_min_seconds_before_close_for_trade() or '未设'}",
-        f"连亏冷却 LOSS_STREAK_COOLDOWN={_loss_streak_cooldown_enabled()}  "
-        f"LOSS_STREAK_MIN_TRADES={os.environ.get('LOSS_STREAK_MIN_TRADES', '6')}  "
-        f"WINDOW={os.environ.get('LOSS_STREAK_WINDOW', '5')}  MAX_LOSSES={os.environ.get('LOSS_STREAK_MAX_LOSSES', '4')}",
-        f"卖一作入场 USE_BOOK_ASK_FOR_ENTRY={_use_book_ask_for_entry()}  "
-        f"TA最低置信 MIN_DECISION_CONFIDENCE="
-        f"{_min_decision_confidence():g}  "
-        f"最低|得分| MIN_ABS_SCORE={_min_abs_score():g}（高胜率新增过滤）  "
-        f"SPIKE_JUMP(尖峰)={_spike_jump()}；"
-        f"方向单盘口闸 DIRECTION_ORDERBOOK_MAX_SUM={os.environ.get('DIRECTION_ORDERBOOK_MAX_SUM', '1.05')}（高胜率默认1.05）",
-    ]
-    if args.dry_run:
-        dr_bs = os.environ.get("DRY_RUN_BINANCE_SETTLE", "1").strip().lower() in (
-            "1",
-            "true",
-            "yes",
-            "on",
-        )
-        lines.append(
-            "干跑结算：收盘后等待秒(DRY_RUN_SETTLE_AFTER_S)="
-            f"{float(os.environ.get('DRY_RUN_SETTLE_AFTER_S', '2')):g}；"
-            f"Chainlink 收盘等待上限(DRY_RUN_CHAINLINK_CLOSE_WAIT_S)="
-            f"{float(os.environ.get('DRY_RUN_CHAINLINK_CLOSE_WAIT_S', '90')):g}；"
-            f"仅用 Binance 结算(DRY_RUN_BINANCE_SETTLE)={'是' if dr_bs else '否'}；"
-            "方向单干跑结算=单消费者队列线程（不阻塞主循环）"
-        )
-        lines.append(
-            f"干跑资金流水(JSON history)最多保留条数(DRY_RUN_HISTORY_MAX)={_dry_run_history_max()}"
-        )
-    lines.append("================================")
-    print("\n".join(lines))
+
+    print(
+        f"═══════════════════════════════════════\n"
+        f"  模式   : {'干跑 (dry_run)' if args.dry_run else '实盘'}\n"
+        f"  起始资金: {starting}  |  最小下单: {min_bet}\n"
+        f"───────────────────────────────────────\n"
+        f"  套利    : {'开' if _enable_arbitrage_trade() else '关'}  金额={arb_usd:.4f} USD\n"
+        f"  方向单  : {'开' if cap_dir is not None else '关'}  上限={cap_dir:.4f} USD  固定={fix_d or 0:.4f} USD\n"
+        f"  Kelly   : {'开' if _enable_kelly() else '关'}  乘子={_kelly_scale():.2f}\n"
+        f"───────────────────────────────────────\n"
+        f"  狙击来源: {_snipe_price_source()}  提前={_snipe_start_s()}s\n"
+        f"  RTDS    : {'开' if os.environ.get('USE_CHAINLINK_RTDS','1') not in ('0','false','no','off') else '关'}\n"
+        f"  方向策略: {_direction_strategy()}  失衡阈值={_imbalance_threshold():.2f}\n"
+        f"  TA置信度: 最低={_min_decision_confidence():g}  最低|得分|={_min_abs_score():g}\n"
+        f"  尖峰阈值: {_spike_jump()}  逆转最小|pct|={_reversal_min_abs_pct():.3f}%\n"
+        f"  盘口闸  : 方向单={os.environ.get('DIRECTION_ORDERBOOK_MAX_SUM','1.05')}  "
+        f"低价差={os.environ.get('DIRECTION_ONLY_WHEN_BOOK_SUM_LT','') or '无'}\n"
+        f"  连亏冷却: {'开' if _loss_streak_cooldown_enabled() else '关'}  "
+        f"窗口={os.environ.get('LOSS_STREAK_WINDOW','5')} 最大连亏={os.environ.get('LOSS_STREAK_MAX_LOSSES','4')}\n"
+        f"  概率优势: {'开' if _use_fair_prob_edge() else '关'}  edge仓位={'开' if _use_edge_position_sizing() else '关'}\n"
+        f"═══════════════════════════════════════",
+        flush=True,
+    )
 
 
 def _dry_run_state_path() -> str:
@@ -2095,25 +1951,15 @@ def _apply_queued_dry_settle(job: QueuedDrySettle, state: BotState) -> None:
         )
         _save_dry_run_state(state)
 
-    # ── 结算结果卡片 ────────────────────────────────
+    # ── 结算结果 ──────────────────────────────────────────
     dir_actual = "涨" if actual == 1 else "跌"
     dir_bet = "涨" if job.direction == 1 else "跌"
     win_icon = "✓" if win else "✗"
     settled_icon = "✓" if settled else "⚠"
-    print(
-        f"  ┌─── 结算 {window_ts} ──────────────────────", flush=True)
-    print(
-        f"  │ {win_icon} 结果={dir_actual} | 下注={dir_bet} | settle={settle_method}", flush=True)
-    print(
-        f"  │ {settled_icon} settled={settled} | payout=${settle_payout:.2f} | "
-        f"余额={state.bankroll:.4f}", flush=True)
-    if bo is not None and bc is not None:
-        print(
-            f"  │ Binance open={bo:.2f} close={bc:.2f}", flush=True)
     if bust_reset:
-        print(f"  │ 💥 bust重置 → {state.principal}", flush=True)
-    print(
-        f"  └──────────────────────────────────────────", flush=True)
+        print(f"[结算] {win_icon} {dir_actual} | 下注{dir_bet} | {settled_icon} payout=${settle_payout:.2f} | 余额={state.bankroll:.4f} | 💥bust重置", flush=True)
+    else:
+        print(f"[结算] {win_icon} {dir_actual} | 下注{dir_bet} | {settled_icon} payout=${settle_payout:.2f} | 余额={state.bankroll:.4f}", flush=True)
     _append_trade_train_record(
         {
             "event": "directional_settle",

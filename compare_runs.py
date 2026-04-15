@@ -1,14 +1,18 @@
 """
 多组置信阈值 × 三种仓位模式的网格回测（逻辑见 TRADING_AND_SYSTEM_LOGIC.md）。
 
-⚠️ 修复说明（与旧版本的区别）：
+⚠️ v2.0 修复说明（与旧版本的区别）：
 1. analyze() 不再接收 window_open/current_price，而是只接收决策点之前的历史 K 线，
    避免了"用窗口内已发生的价格变动预测同一窗口结果"的循环论证。
 2. 决策点：在窗口开始前取足够多的历史 K 线，计算 TA 信号做预测。
    窗口开始后（SNIPE_START 秒内）的价格变动作为入场价格参考。
 3. 盈亏计算：正确模拟 Polymarket 每份额 $1 的机制。
 4. 添加了实盘的关键过滤：最小下注、bankroll 不足、置信度阈值等。
-5. 入场价用合理概率估算，不再用窗口内变动直接映射（避免未来函数）。
+5. 入场价用统一入场价估算，不再用窗口内变动直接映射（避免未来函数）。
+
+v2.0 额外统一：
+- 仓位计算引用 trading_logic.compute_bet（与 bot.py 共享）
+- 入场价引用 trading_logic.estimate_entry_for_backtest（与 bot.py 的 directional_entry_from_window_pct 共享核心逻辑）
 """
 
 from __future__ import annotations
@@ -21,42 +25,12 @@ from openpyxl import Workbook
 
 from backtest import fetch_klines_range_hours
 from strategy import AnalysisResult, Candle, analyze
+from trading_logic import compute_bet, estimate_entry_for_backtest
 
 # ─── 窗口参数（与 bot.py 保持一致）─────────────────────────────
 WINDOW = 300        # 5 分钟一个窗口
 SNIPE_START = 10    # 距窗口结束前 10 秒进入狙击
 MIN_CANDLES_FOR_TA = 60  # 决策前至少需要的历史 K 线根数
-
-# ─── 回测专用辅助函数（与实盘 bot.py 的 estimate_fair_prob 逻辑一致）───
-
-
-def estimate_fair_prob(window_open: float, decision_px: float) -> float:
-    """
-    估计合理概率：基于窗口开始到决策点的价格变动。
-    变动越大 → 概率偏移越大（但不是 100%，有摩擦）。
-
-    注意：回测时决策点价格来自窗口开始后的前几根 K 线，
-    这是对实盘"狙击阶段轮询价格"的模拟，不代表使用了窗口结果。
-    """
-    if window_open <= 0 or decision_px <= 0:
-        return 0.5
-    pct = (decision_px - window_open) / window_open
-    # 非线性映射：小的变动对应小的概率偏移
-    offset = 10.0 * pct / (1.0 + 10.0 * abs(pct))
-    fair = 0.5 + offset
-    return max(0.01, min(0.99, fair))
-
-
-def entry_price_from_fair_prob(fair_prob: float, direction: int) -> float:
-    """根据合理概率估算 Polymarket 入场价。"""
-    if direction == 1:
-        return min(0.97, max(0.03, fair_prob))
-    else:
-        return min(0.97, max(0.03, 1.0 - fair_prob))
-
-# 网格参数
-THRESHOLDS = [round(i * 0.1, 1) for i in range(9)]  # 0.0, 0.1, 0.2, ..., 0.8
-SIZING_MODES = ("flat", "safe", "aggressive")
 
 # ─── 默认参数（可通过命令行覆盖）──────────────────────────────
 DEFAULT_INITIAL = 100.0   # 初始资金
@@ -76,40 +50,6 @@ class SimState:
     curve: List[float] = field(default_factory=list)
     trade_log: List[dict[str, Any]] = field(default_factory=list)
     skipped_reasons: Dict[str, int] = field(default_factory=dict)
-
-
-def bet_flat(initial: float, bankroll: float, min_bet: float) -> float:
-    """固定 10% 初始资金。"""
-    x = max(min_bet, initial * 0.10)
-    return min(bankroll, x)
-
-
-def bet_safe(_initial: float, bankroll: float, min_bet: float) -> float:
-    """固定 25% 当前 bankroll。"""
-    return max(min_bet, min(bankroll, bankroll * 0.25))
-
-
-def bet_aggressive(principal: float, bankroll: float, min_bet: float) -> float:
-    """只拿利润下注（保留本金）。"""
-    if bankroll <= principal + 1e-12:
-        return max(min_bet, bankroll)
-    return max(min_bet, bankroll - principal)
-
-
-def sizing_bet(
-    mode: str,
-    initial: float,
-    principal: float,
-    bankroll: float,
-    min_bet: float,
-) -> float:
-    if bankroll < min_bet:
-        return 0.0
-    if mode == "flat":
-        return bet_flat(initial, bankroll, min_bet)
-    if mode == "safe":
-        return bet_safe(initial, bankroll, min_bet)
-    return bet_aggressive(principal, bankroll, min_bet)
 
 
 def key(mode: str, th: float) -> str:
@@ -134,6 +74,11 @@ def count_skipped(reasons: Dict[str, int], reason: str) -> None:
     reasons[reason] = reasons.get(reason, 0) + 1
 
 
+# 网格参数（SIZING_MODES 与 trading_logic.compute_bet 保持一致）
+THRESHOLDS = [round(i * 0.1, 1) for i in range(9)]  # 0.0, 0.1, 0.2, ..., 0.8
+SIZING_MODES = ("flat", "safe", "aggressive")
+
+
 def simulate(
     rows: List[Tuple[int, Candle]],
     min_bet: float,
@@ -141,11 +86,13 @@ def simulate(
     verbose: bool = False,
 ) -> Tuple[Dict[str, SimState], List[int]]:
     """
-    正确的回测逻辑：
+    回测核心逻辑（与 bot.py 共享，详见 CHANGELOG.md v2.0）：
     - 每个 5 分钟窗口，在窗口开始前的历史 K 线上做 TA 分析
     - 用窗口开始时刻的价格和 TA 信号做预测
     - 用窗口内前几根 K 线（SNIPE_START 秒内）的价格作为入场参考
     - 用窗口结束时的价格判断胜负
+    - 仓位计算：引用 trading_logic.compute_bet（与 bot.py 共享）
+    - 入场价估算：引用 trading_logic.estimate_entry_for_backtest（与 bot.py 共享核心）
     """
     ts_list = [t for t, _ in rows]
     curve_steps: List[int] = []
@@ -197,8 +144,8 @@ def simulate(
             continue
 
         # 历史 K 线（用于 TA 分析，不含窗口期）
-        hist_candles = [Candle(c.open, c.high, c.low, c.close, c.volume)
-                        for _, c in rows[decision_hist_start: decision_hist_end + 1]]
+        hist_candles = [Candle(open_time_ms=ts, open=c.open, high=c.high, low=c.low, close=c.close, volume=c.volume)
+                        for ts, c in rows[decision_hist_start: decision_hist_end + 1]]
 
         # 窗口开盘价
         window_open = rows[i_start][1].open
@@ -245,17 +192,16 @@ def simulate(
                     count_skipped(st.skipped_reasons, "bankroll_too_low")
                     continue
 
-                # ── 计算下注金额 ──────────────────────────────
-                bet = sizing_bet(mode, st.initial, st.principal, st.bankroll, min_bet)
+                # ── 计算下注金额（引用 trading_logic，与 bot.py 共享）─────────
+                bet = compute_bet(mode, st.bankroll, st.principal, min_bet)
                 if bet <= 0:
                     st.curve.append(st.bankroll)
                     count_skipped(st.skipped_reasons, "bet_zero")
                     continue
 
-                # ── 计算入场价 ───────────────────────────────
-                # 基于决策时刻价格和合理概率估算入场价
-                fair = estimate_fair_prob(window_open, decision_px)
-                entry = entry_price_from_fair_prob(fair, res.direction)
+                # ── 计算入场价（引用 trading_logic，与 bot.py 共享）────────
+                # 用窗口偏离估算入场价（与实盘的真实盘口价存在差距，见 CHANGELOG.md）
+                entry = estimate_entry_for_backtest(res.direction, window_open, decision_px)
 
                 # ── 模拟交易盈亏 ─────────────────────────────
                 # Polymarket：买入 bet / entry 份额，每份额价值 $1
@@ -281,7 +227,7 @@ def simulate(
                     "bet": bet,
                     "win": win,
                     "entry": entry,
-                    "fair_prob": fair,
+                    "w_pct": (decision_px - window_open) / window_open * 100.0,
                     "outcome": outcome,
                     "direction": res.direction,
                     "score": res.score,

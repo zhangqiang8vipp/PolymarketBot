@@ -113,8 +113,9 @@ def binance_get(path: str, params: Dict[str, Any], timeout: int = 30) -> request
 
 
 def _row_to_candle(row: list) -> Candle:
+    ts = int(row[0])
     o, h, low, c, v = float(row[1]), float(row[2]), float(row[3]), float(row[4]), float(row[5])
-    return Candle(open=o, high=h, low=low, close=c, volume=v)
+    return Candle(open_time_ms=ts, open=o, high=h, low=low, close=c, volume=v)
 
 
 def _coinbase_kline_fallback_disabled() -> bool:
