@@ -1916,7 +1916,8 @@ def run_trade_cycle(
                 return
 
     sig_cn = "涨" if token_up else "跌"
-    print(f"[信号] {sig_cn} | score={decision.score:+.2f} conf={decision.confidence:.2f} | 入场={entry:.3f} 下注=${bet:.2f} | 偏离={w_pct:+.3f}%", flush=True)
+    shares = bet / entry if entry > 0 else 0.0
+    print(f"[信号] {sig_cn} | score={decision.score:+.2f} conf={decision.confidence:.2f} | 入场={entry:.3f} 下注=${bet:.2f}({shares:.2f}份) | 偏离={w_pct:+.3f}%", flush=True)
 
     # ── 实盘下单 ─────────────────────────────────────
     if not dry_run and client is not None:
