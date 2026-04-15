@@ -150,7 +150,7 @@ _BOT_STATE_LOCK = threading.RLock()
 
 WINDOW = 300
 SNIPE_DEADLINE = 5
-POLL = 2.0
+POLL = 0.75
 ORDER_RETRY = 3.0
 SPIKE_JUMP = 1.5
 MIN_SHARES_POLY = 5
@@ -337,7 +337,7 @@ def get_best_ask(token_id: str, client: Optional[Any]) -> Optional[float]:
         except Exception:
             pass
     try:
-        r = requests.get(f"{_clob_host()}/book", params={"token_id": token_id}, timeout=15)
+        r = requests.get(f"{_clob_host()}/book", params={"token_id": token_id}, timeout=5)
         r.raise_for_status()
         data = r.json()
         asks = data.get("asks") or []
@@ -1254,6 +1254,26 @@ def place_buy_gtc_095(client: Any, token_id: str, min_shares: int = MIN_SHARES_P
     return client.post_order(signed, OrderType.GTC)
 
 
+def _tick_only_decision(ticks: List[float]) -> AnalysisResult:
+    """
+    K 线不可用时的备用决策：用窗口内的实时 tick 数据做简单趋势判断。
+    置信度低（0.1），不会触发正常下单阈值。
+    """
+    if len(ticks) < 3:
+        return AnalysisResult(direction=0, score=0.0, confidence=0.0, details={"reason": "tick数据不足"})
+    recent = ticks[-20:] if len(ticks) >= 20 else ticks
+    avg = sum(recent) / len(recent)
+    last = ticks[-1]
+    direction = 1 if last > avg else -1 if last < avg else 0
+    score = (last - avg) / avg * 100.0 * 5.0
+    return AnalysisResult(
+        direction=direction,
+        score=score,
+        confidence=0.1,
+        details={"reason": "tick_only", "tick_avg": avg, "tick_last": last},
+    )
+
+
 def snipe_loop(
     window_ts: int,
     window_open: float,
@@ -1262,69 +1282,85 @@ def snipe_loop(
     chainlink_feed: Optional[Any] = None,
     arb_hit: Optional[threading.Event] = None,
 ) -> Tuple[AnalysisResult, List[float]]:
-    """狙击循环：只取窗口开始前的 K 线做 TA，与 compare_runs.py 逻辑一致。"""
+    """
+    狙击循环：K 线在循环内持续获取（直到有数据或窗口结束）。
+    每次迭代用已有 tick 更新 analyze()。
+    K 线不可用时退化为纯 tick 判断（置信度低，不下单）。
+    """
     ss = _snipe_start_s()
     min_conf = min_confidence_for_mode(mode)
     best: Optional[AnalysisResult] = None
     last_score: Optional[float] = None
     ticks: List[float] = []
-    snipe_armed = False
-    # 窗口开始的毫秒时间戳，用于过滤掉窗口期内的 K 线
     window_start_ms = window_ts * 1000
+    deadline = float(window_close) - SNIPE_DEADLINE
+    sniper_start = deadline - float(ss)
+
+    kline_fetch_done = False
+    candles: List[Candle] = []
+
+    # ── 先睡到 sniper 开始时刻 ────────────────────────────────────────────
+    t_until_snipe = sniper_start - now()
+    if t_until_snipe > 0:
+        time.sleep(t_until_snipe)
+
+    snipe_armed = False
     while True:
-        t_left = window_close - now()
-        if t_left < SNIPE_DEADLINE:
+        t_left = deadline - now()
+        if t_left <= 0:
             break
         if arb_hit is not None and arb_hit.is_set():
             raise ArbitrageCycleDone
-        if t_left > ss:
-            time.sleep(max(0.15, min(5.0, t_left - ss)))
-            continue
+
+        # K 线获取（持续尝试；已有数据则跳过）
+        # 注意：若距狙击 < 15s 则不再等待（API 延迟会导致超时）
+        if not kline_fetch_done:
+            if t_left >= 15.0:
+                for attempt in range(2):
+                    try:
+                        raw = fetch_recent_candles_1m(60)
+                        cand = [c for c in raw if c.open_time_ms < window_start_ms]
+                        if len(cand) >= 2:
+                            candles = cand
+                            kline_fetch_done = True
+                        break
+                    except (requests.RequestException, OSError):
+                        if attempt == 1:
+                            break
+                        time.sleep(0.5)
+
         if not snipe_armed:
             snipe_armed = True
-            print(f"[狙击] 窗口{window_ts} | 距收盘 {t_left:.1f}s，开始分析", flush=True)
+            kline_status = "K线已获取" if kline_fetch_done else "K线获取中"
+            print(f"[狙击] 窗口{window_ts} | 距收盘 {t_left:.1f}s，开始分析（{kline_status}）", flush=True)
+
         px = snipe_current_price(chainlink_feed)
         ticks.append(px)
         if arb_hit is not None and arb_hit.is_set():
             raise ArbitrageCycleDone
-        candles: List[Candle] = []
-        for attempt in range(5):
-            try:
-                candles = fetch_recent_candles_1m(60)
-                break
-            except (requests.RequestException, OSError):
-                if attempt >= 4:
-                    raise
-                time.sleep(1.0 + float(attempt))
-        # 过滤掉窗口开始后的 K 线，只留决策点之前的历史数据
-        candles = [c for c in candles if c.open_time_ms < window_start_ms]
-        if len(candles) < 2:
-            time.sleep(POLL)
-            continue
-        res = analyze(candles, tick_prices=ticks[-120:])
+
+        if kline_fetch_done and candles:
+            res = analyze(candles, tick_prices=ticks[-120:])
+        else:
+            res = _tick_only_decision(ticks)
+
         print(f"[狙击] 窗口{window_ts} | score={res.score:+.2f} conf={res.confidence:.2f} dir={'Up' if res.direction>0 else 'Dn'}", flush=True)
         if best is None or abs(res.score) > abs(best.score):
             best = res
         if last_score is not None and abs(res.score - last_score) >= _spike_jump():
             print(f"[狙击] 尖峰 Δ={res.score - last_score:+.2f}，提前发射", flush=True)
             return res, ticks
-        if res.confidence >= min_conf:
+        if res.confidence >= min_conf and kline_fetch_done:
             return res, ticks
         last_score = res.score
         time.sleep(POLL)
+
     if best is None:
         px = snipe_current_price(chainlink_feed)
         ticks.append(px)
-        for attempt in range(5):
-            try:
-                candles2 = fetch_recent_candles_1m(60)
-                break
-            except (requests.RequestException, OSError):
-                if attempt >= 4:
-                    raise
-                time.sleep(1.0 + float(attempt))
-        candles2 = [c for c in candles2 if c.open_time_ms < window_start_ms]
-        best = analyze(candles2, tick_prices=ticks)
+        best = analyze(candles, tick_prices=ticks) if candles else AnalysisResult(
+            direction=0, score=0.0, confidence=0.0, details={"skip_trade": True}
+        )
     if best.confidence < min_conf:
         det = dict(best.details)
         det["skip_trade"] = True
@@ -1402,6 +1438,24 @@ def run_trade_cycle(
         pass  # ARBITRAGE_POLL_S=0，套利仅在周期头测一次，不单独打日志
 
     # ── 狙击循环 ──────────────────────────────────────
+    # orderbook 用后台线程预取（不阻塞 K 线分析）
+    up_ask_pre: Optional[float] = [None]
+    down_ask_pre: Optional[float] = [None]
+    _book_deadline = float(close_at) - 5.0
+
+    def _fetch_books() -> None:
+        try:
+            up_ask_pre[0] = get_best_ask(up_tid, client)
+        except Exception:
+            pass
+        try:
+            down_ask_pre[0] = get_best_ask(down_tid, client)
+        except Exception:
+            pass
+
+    book_thread = threading.Thread(target=_fetch_books, name="book-prefetch", daemon=True)
+    book_thread.start()
+
     try:
         decision, ticks = snipe_loop(
             window_ts,
@@ -1412,11 +1466,21 @@ def run_trade_cycle(
             arb_hit=arb_hit_ev,
         )
     except ArbitrageCycleDone:
+        book_thread.join(timeout=1.0)
         return
     finally:
         stop_arb.set()
         if arb_thread is not None:
             arb_thread.join(timeout=min(8.0, poll + 2.0) if poll > 0 else 2.0)
+
+    # 等待 orderbook 预取（最多到截止时间）
+    remaining = _book_deadline - now()
+    book_thread.join(timeout=max(0.0, remaining))
+
+    # ── deadline 检查 ────────────────────────────────
+    if now() >= float(close_at):
+        print(f"[窗口 {window_ts}] 狙击结束，窗口已收盘，跳过后续流程", flush=True)
+        return
 
     # ── 方向过滤 ─────────────────────────────────────
     if decision.details.get("skip_trade"):
@@ -1428,10 +1492,10 @@ def run_trade_cycle(
             print(f"[窗口 {window_ts}] 跳过：连亏冷却", flush=True)
             return
 
-    # ── 盘口检查 ────────────────────────────────────
+    # ── 盘口检查（复用预取数据；若预取失败则快速重试一次）─────────────────
     px_decide = ticks[-1] if ticks else snipe_current_price(chainlink_feed)
-    up_ask = get_best_ask(up_tid, client)
-    down_ask = get_best_ask(down_tid, client)
+    up_ask = up_ask_pre[0] if up_ask_pre[0] is not None else get_best_ask(up_tid, client)
+    down_ask = down_ask_pre[0] if down_ask_pre[0] is not None else get_best_ask(down_tid, client)
 
     mx_sum = _direction_orderbook_max_sum()
     if mx_sum is not None:
@@ -2036,6 +2100,43 @@ def enqueue_settlement(item: object, state: BotState, feed: Optional[Any]) -> No
     _settlement_q.put(item)
 
 
+def _drain_settlement_queue(dry_run: bool, timeout: float = 300.0) -> None:
+    """
+    等待结算队列完全排空（用于 --once dry_run 退出前）。
+    先等自然排空（worker 消费完毕），再送哨兵确保 worker 线程退出。
+    """
+    with _settlement_worker_mu:
+        q = _settlement_q
+        w = _settlement_worker
+    if q is None or w is None:
+        return
+
+    deadline = time.time() + timeout
+    if q.unfinished_tasks > 0:
+        print(f"[结算] 等待 {q.unfinished_tasks} 个结算任务完成（超时 {timeout:.0f}s）…", flush=True)
+        # wait() 会在所有任务被 get() 且 task_done() 后返回
+        try:
+            q.join()
+        except Exception:
+            pass
+
+    t_left = deadline - time.time()
+    if t_left <= 0:
+        print("[结算] 等待超时，强制退出", flush=True)
+    else:
+        q.put(_SETTLEMENT_SENTINEL)
+        w.join(timeout=t_left)
+        if w.is_alive():
+            print("[结算] worker join 超时，强制退出", flush=True)
+        else:
+            print("[结算] 队列已清空，worker 线程已退出", flush=True)
+
+    # 重新读取状态，打印结算后的 bankroll
+    _, br, pr, tr, hist, hseq = _load_dry_run_state(0, 0, 0)
+    if tr > 0:
+        print(f"[干跑总结] trades={tr} | bankroll={br:.4f}", flush=True)
+
+
 def shutdown_settlement_worker(timeout: float = 240.0) -> None:
     """退出前送入哨兵并 join，避免干跑结算丢写。"""
     global _settlement_q, _settlement_worker
@@ -2166,6 +2267,10 @@ def main() -> None:
             time.sleep(5.0)
 
         if args.once:
+            # dry_run 时 queued item 需要等结算线程跑完才知盈亏
+            print("[主循环] --once 退出中，等待结算队列处理完毕…", flush=True)
+            if args.dry_run:
+                _drain_settlement_queue(args.dry_run)
             break
         if max_trades and state.trades >= max_trades:
             break

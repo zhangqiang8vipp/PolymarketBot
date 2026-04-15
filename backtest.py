@@ -58,7 +58,7 @@ def _binance_http_retry_backoff_s() -> float:
         return 1.2
 
 
-def binance_get(path: str, params: Dict[str, Any], timeout: int = 30) -> requests.Response:
+def binance_get(path: str, params: Dict[str, Any], timeout: int = 5) -> requests.Response:
     """
     GET {base}/{path} using BINANCE_REST_BASE then fallbacks on retryable HTTP or connection errors.
     同一根地址上 ConnectionError/Timeout/OSError 会退避重试（仅一个根时也能扛 WinError 10054 / 代理闪断）。
@@ -73,7 +73,7 @@ def binance_get(path: str, params: Dict[str, Any], timeout: int = 30) -> request
         conn_err: BaseException | None = None
         for attempt in range(retries):
             try:
-                r = requests.get(url, params=params, timeout=timeout)
+                r = requests.get(url, params=params, timeout=(5, 5))
                 conn_err = None
                 break
             except (requests.ConnectionError, requests.Timeout, OSError) as e:
@@ -272,7 +272,7 @@ def _fetch_klines_raw_binance_or_coinbase(
 ) -> list:
     params = _binance_klines_params(symbol, start_ms, end_ms, limit)
     try:
-        r = binance_get("klines", params=params, timeout=30)
+        r = binance_get("klines", params=params, timeout=5)
         return r.json()
     except (RuntimeError, requests.HTTPError) as e:
         if _coinbase_kline_fallback_disabled() or not _is_geo_or_access_blocked(e):
