@@ -459,6 +459,21 @@ class ChainlinkBtcUsdRtds:
                     best_before = (ts_ms, v)
             return best_before[1] if best_before else None
 
+    def open_price_at_boundary(self, boundary_unix_s: int) -> Optional[Tuple[int, float]]:
+        """
+        Returns (ts_ms, price) of the first Chainlink tick with ts_ms >= boundary_unix_s * 1000.
+        **不检查 lag**：不管这条 tick 晚到多少秒都返回。
+        这与 Polymarket 页面「目标价」逻辑一致（取窗口边界后第一条 Chainlink oracle 更新）。
+        参考你的 WS demo：sorted_buffer[0] = 边界后最早那条。
+        """
+        target_ms = int(boundary_unix_s) * 1000
+        with self._lock:
+            best: Optional[Tuple[int, float]] = None
+            for ts_ms, v in self._ticks:
+                if ts_ms >= target_ms and (best is None or ts_ms < best[0]):
+                    best = (ts_ms, v)
+            return best
+
     def diagnose_rtds_open_buffer(self, boundary_unix_s: int) -> str:
         """供 RTDS_FALLBACK_DEBUG=1 打印：为何可能拿不到开盘价（缓冲与时间轴）。"""
         target_ms = int(boundary_unix_s) * 1000

@@ -910,62 +910,46 @@ def _gamma_window_open_px(window_ts: int) -> Tuple[Optional[float], str]:
 
 def _chainlink_window_open_px(feed: Any, window_ts: int) -> Tuple[Optional[float], str]:
     """
-    窗口开盘价：优先边界后第一条 tick（可选最大 payload 滞后）；若无则短暂等待；仍无则用边界前最近一条（见 RTDS_OPEN_FALLBACK_MAX_MS）。
-    返回 (价格或 None, 人类可读来源子类，便于与 Polymarket 页面对照)。
+    窗口开盘价：直接取窗口边界后第一条 Chainlink tick（你的 WS demo 思路）。
+    - 先查缓冲内是否有边界后的 tick（无 lag 过滤）
+    - 无则等待 CHAINLINK_OPEN_WAIT_S 秒（默认 60s）
+    - 仍无则用边界前回补（RTDS_OPEN_FALLBACK_MAX_MS 内）
+    返回 (BTC/USD 价格或 None, 来源说明)。
     """
-    lag = _rtds_open_max_payload_lag_ms()
-    target_ms = int(window_ts) * 1000
-    px = feed.first_price_at_or_after(window_ts, max_payload_lag_ms=lag)
-    if px is not None:
-        return float(px), "≥窗口起点首条 RTDS Chainlink tick（对齐页面「目标价」思路）"
-    skipped_wait_for_late = False
-    if lag is not None and hasattr(feed, "earliest_tick_at_or_after"):
-        tup = feed.earliest_tick_at_or_after(window_ts)
-        if tup is not None and tup[0] - target_ms > lag:
-            skipped_wait_for_late = True
-            dt_ms = float(tup[0] - target_ms)
-            dt_s = dt_ms / 1000.0
-            lag_s = float(lag) / 1000.0
-            print(
-                f"[开盘价] RTDS：最早 ≥ 窗口起点的 tick 的 payload 时间戳比边界晚 {dt_s:.1f}s（{dt_ms:.0f}ms），"
-                f"超过允许滞后 RTDS_OPEN_MAX_PAYLOAD_LAG_MS={lag}ms（≈{lag_s:.1f}s）；"
-                "疑未收到窗口起点附近样本；不采用严格对齐价、跳过 CHAINLINK_OPEN_WAIT_S 等待，改边界前回补、"
-                "晚到 tick 接受（RTDS_OPEN_ACCEPT_LATE_TICK）或 Binance。",
-                flush=True,
+    # 1. 缓冲内已有边界后的 tick → 直接用（无 lag 限制）
+    tup = feed.open_price_at_boundary(window_ts)
+    if tup is not None:
+        lag_ms = tup[0] - int(window_ts) * 1000
+        lag_s = lag_ms / 1000.0
+        note = f"lag={lag_s:.1f}s" if lag_ms > 0 else "精确对齐"
+        return float(tup[1]), f"边界后首条 Chainlink tick（{note}）"
+
+    # 2. 缓冲暂无，等待 CHAINLINK_OPEN_WAIT_S 秒
+    wait_s = float(os.environ.get("CHAINLINK_OPEN_WAIT_S", "60"))
+    deadline = time.time() + wait_s
+    poll_s = 0.5
+    while time.time() < deadline:
+        time.sleep(min(poll_s, deadline - time.time()))
+        tup = feed.open_price_at_boundary(window_ts)
+        if tup is not None:
+            lag_ms = tup[0] - int(window_ts) * 1000
+            lag_s = lag_ms / 1000.0
+            waited_s = time.time() - (deadline - wait_s)
+            return float(tup[1]), (
+                f"等待 {waited_s:.0f}s 后边界后首条 Chainlink tick（lag={lag_s:.1f}s）"
             )
-    if not skipped_wait_for_late:
-        try:
-            w = float(os.environ.get("CHAINLINK_OPEN_WAIT_S", "5"))
-            if w > 0:
-                v = float(
-                    feed.wait_first_price_at_or_after(
-                        window_ts, timeout_s=w, max_payload_lag_ms=lag
-                    )
-                )
-                return v, f"等待 CHAINLINK_OPEN_WAIT_S={w:g}s 后 ≥窗口起点首条 tick"
-        except TimeoutError:
-            pass
+    print(
+        f"[开盘价] RTDS：等待 {wait_s}s 内缓冲内无边界后 tick → 尝试边界前回补",
+        flush=True,
+    )
+
+    # 3. 回补：边界前的最近一条
     fb = feed.open_price_before_boundary_fallback(window_ts)
     if fb is not None:
-        return float(fb), "窗口起点前最近一条 tick 回补（RTDS_OPEN_FALLBACK_MAX_MS 内，与严格边界价可能略有偏差）"
-    if skipped_wait_for_late and _rtds_open_accept_late_tick() and hasattr(
-        feed, "earliest_tick_at_or_after"
-    ):
-        tup2 = feed.earliest_tick_at_or_after(window_ts)
-        if tup2 is not None:
-            late_ms = float(tup2[0] - target_ms)
-            late_s = late_ms / 1000.0
-            return float(tup2[1]), (
-                f"≥窗口起点首条 RTDS（payload 晚 {late_s:.1f}s / {late_ms:.0f}ms，"
-                "RTDS_OPEN_ACCEPT_LATE_TICK=1；与页面「目标价」秒级对齐仍可能偏差）"
-            )
-    if skipped_wait_for_late:
-        return None, (
-            "有 tick 但最早 ≥ 起点的 payload 已晚于 RTDS_OPEN_MAX_PAYLOAD_LAG_MS，"
-            "且无窗口起点前的 tick 可回补（常见：在本 5m 窗口中途才启动/才连上 RTDS，链上样本从「窗内」才开始）；"
-            "可设 RTDS_OPEN_ACCEPT_LATE_TICK=1 仍用晚到首条 Chainlink，或增大 RTDS_OPEN_MAX_PAYLOAD_LAG_MS（毫秒）"
-        )
-    return None, "缓冲内无 ≥ 边界的 tick（或等待超时）且无边界前回补"
+        return float(fb), "边界前回补最近一条 Chainlink tick（RTDS_OPEN_FALLBACK_MAX_MS 内，与严格边界价可能有偏差）"
+
+    # 4. 彻底无数据
+    return None, "RTDS 缓冲内无边界后 tick 且无边界前回补"
 
 
 def window_open_oracle(
