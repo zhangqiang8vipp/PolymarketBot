@@ -1353,19 +1353,19 @@ def run_trade_cycle(
     slug = window_slug(window_ts)
     up_tid, down_tid = parse_gamma_tokens(slug)
 
-    print(f"[窗口 {window_ts}] slug={slug} | {mode} | {'干跑' if dry_run else '实盘'} | 开盘={window_open:.2f}", flush=True)
-
-    # ── 套利探测（周期开头）───────────────────────────────
-    if log_up_down_ask_spread(window_ts, up_tid, down_tid, client, dry_run, state):
-        return
-
     # ── 开盘价 ──────────────────────────────────────
     try:
         window_open, open_how = window_open_oracle(window_ts, chainlink_feed)
     except Exception as e:
         print(f"[跳过] 开盘价获取失败: {e}", flush=True)
         return
+
+    print(f"[窗口 {window_ts}] slug={slug} | {mode} | {'干跑' if dry_run else '实盘'} | 开盘={window_open:.2f}", flush=True)
     print(f"  开盘={window_open:.2f} | 来源={open_how[:40]}", flush=True)
+
+    # ── 套利探测（周期开头）───────────────────────────────
+    if log_up_down_ask_spread(window_ts, up_tid, down_tid, client, dry_run, state):
+        return
 
     # ── 长休眠至狙击 ──────────────────────────────────
     sleep_s = close_at - _snipe_start_s() - now()
