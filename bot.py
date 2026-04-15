@@ -1371,8 +1371,7 @@ _window_tracker = _WindowTracker()
 
 
 def _maybe_refresh_shares_loop(
-    up_tid: str,
-    down_tid: str,
+    window_ts: int,
     bet_usd: float,
     until: float,
     poll_interval: float = 60.0,
@@ -1381,7 +1380,7 @@ def _maybe_refresh_shares_loop(
     在狙击等待期间，每 poll_interval 秒刷新一次 Up/Down 真实 best ask + shares。
     参考 demo 的 refresh_shares()。
     """
-    _refresh_shares(up_tid, down_tid, bet_usd)  # 立即打印一次
+    _refresh_shares(window_ts, bet_usd)  # 立即打印一次
     next_refresh = time.time() + poll_interval
     while time.time() < until:
         remaining = until - time.time()
@@ -1389,25 +1388,65 @@ def _maybe_refresh_shares_loop(
         if sleep_for > 0:
             time.sleep(max(0.0, sleep_for))
         if time.time() < until:
-            _refresh_shares(up_tid, down_tid, bet_usd)
+            _refresh_shares(window_ts, bet_usd)
             next_refresh = time.time() + poll_interval
 
 
-def _refresh_shares(up_tid: str, down_tid: str, bet_usd: float) -> None:
-    """抓 Up/Down best ask 并打印 shares 参考信息（用于狙击前的实时盘口监控）。"""
+def _refresh_shares(window_ts: int, bet_usd: float) -> None:
+    """
+    每隔 poll_interval 秒调用一次：实时抓当前窗口的 Gamma token → CLOB best ask → shares。
+    参考 demo refresh_shares()。
+    """
     try:
-        up_ask = get_best_ask(up_tid, None)
-        down_ask = get_best_ask(down_tid, None)
+        slug = window_slug(window_ts)
+        r = requests.get(f"https://gamma-api.polymarket.com/events?slug={slug}", timeout=8)
+        if r.status_code != 200:
+            return
+        ev = r.json()
+        if not ev:
+            return
+        market = ev[0].get("markets", [{}])[0]
+        clob_ids_raw = market.get("clobTokenIds")
+        if not clob_ids_raw:
+            return
+        clob_ids = json.loads(clob_ids_raw) if isinstance(clob_ids_raw, str) else clob_ids_raw
+        outcomes_raw = market.get("outcomes")
+        if not outcomes_raw:
+            return
+        outcomes = json.loads(outcomes_raw) if isinstance(outcomes_raw, str) else outcomes_raw
+        up_idx = next((i for i, o in enumerate(outcomes) if str(o).strip().lower() == "up"), None)
+        down_idx = next((i for i, o in enumerate(outcomes) if str(o).strip().lower() == "down"), None)
+        if up_idx is None or down_idx is None:
+            return
+        up_tok = clob_ids[up_idx]
+        down_tok = clob_ids[down_idx]
+
+        def _best_ask(token_id: str) -> Optional[float]:
+            try:
+                resp = requests.get(f"https://clob.polymarket.com/book?token_id={token_id}", timeout=5)
+                if resp.status_code != 200:
+                    return None
+                book = resp.json()
+                asks = book.get("asks")
+                if not asks:
+                    return None
+                return min(float(a["price"]) for a in asks)
+            except Exception:
+                return None
+
+        up_ask = _best_ask(up_tok)
+        down_ask = _best_ask(down_tok)
+
         if up_ask and up_ask > 0:
-            up_shares = bet_usd / up_ask
+            shares = bet_usd / up_ask
             print(
-                f"  📈 Up  best_ask=${up_ask:.4f}  bet=${bet_usd:.2f} → {up_shares:.2f} shares",
+                f"  📈 Up  真实买入价=${up_ask:.4f}  用${bet_usd:.2f}可买 {shares:.4f} shares",
                 flush=True,
             )
         if down_ask and down_ask > 0:
-            down_shares = bet_usd / down_ask
+            shares = bet_usd / down_ask
             print(
-                f"  📉 Down best_ask=${down_ask:.4f}  bet=${bet_usd:.2f} → {down_shares:.2f} shares",
+                f"  📉 Down 真实买入价=${down_ask:.4f}  用${bet_usd:.2f}可买 {shares:.4f} shares",
                 flush=True,
             )
     except Exception:
@@ -1742,7 +1781,7 @@ def run_trade_cycle(
     if snipe_begin > now() + 5:
         shares_thread = threading.Thread(
             target=_maybe_refresh_shares_loop,
-            args=(up_tid, down_tid, ref_shares_usd, snipe_begin),
+            args=(window_ts, ref_shares_usd, snipe_begin),
             name="shares-refresh",
             daemon=True,
         )
