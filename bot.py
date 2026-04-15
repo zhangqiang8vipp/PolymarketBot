@@ -782,6 +782,7 @@ def snipe_current_price(chainlink_feed: Optional[Any]) -> float:
     狙击轮询里的现价：由 SNIPE_PRICE_SOURCE 控制。
     - oracle：有 RTDS feed 且 latest_price 可用则用 Chainlink，否则 Binance ticker。
     - binance：始终 Binance ticker（便于对比/复现旧行为）。
+    Demo 逻辑：RTDS tick 进来时检测是否进入新窗口 → 触发打印上一窗口 Start/Close/胜负。
     """
     if _snipe_price_source() == "binance":
         return fetch_btc_price()
@@ -789,7 +790,9 @@ def snipe_current_price(chainlink_feed: Optional[Any]) -> float:
         try:
             px = chainlink_feed.latest_price()
             if px is not None:
-                return float(px)
+                px = float(px)
+                _on_first_tick_of_new_window(px)
+                return px
         except Exception:
             pass
     return fetch_btc_price()
@@ -1283,45 +1286,66 @@ _settlement_feed_cell: List[Optional[Any]] = [None]
 _settlement_done_evt: Optional[threading.Event] = None
 
 # ── 窗口 Start/Close Price 追踪（demo 逻辑）────────────────────
-_prev_window_ts: Optional[int] = None          # 上一窗口 ts
-_prev_start_price: Optional[float] = None       # 上一窗口 Start Price (BTC/USD)
-_prev_start_prob: Optional[float] = None       # 上一窗口 Start Price (概率，与 _prev_start_price 同源)
-_last_close_price: Optional[float] = None       # 当前窗口最后一条 Chainlink tick（下一个窗口的 close）
+# Demo 关键：窗口 N 的 close = 窗口 N+1 的第一条 RTDS tick
+# 第一条 tick 由 snipe_current_price() 捕获并触发打印
+_prev_window_ts: Optional[int] = None
+_prev_start_price: Optional[float] = None   # BTC/USD
+_prev_start_prob: Optional[float] = None    # 概率（用于显示）
+_window_start_price: Optional[float] = None  # 当前窗口第一条 tick（BTC/USD）
 
 
-def _record_close_price(price: float) -> None:
-    """每个 Chainlink tick 进来时更新最后价格。"""
-    global _last_close_price
-    _last_close_price = price
-
-
-def _on_new_window(
-    window_ts: int,
-    window_open: float,
-    start_price_btc: Optional[float],
-    chainlink_feed: Any,
-) -> None:
+def _init_window_tracker(window_ts: int, first_tick: Optional[float] = None) -> None:
     """
-    新窗口开始时：打印上一窗口的 Start Price(概率+BTC) + Close Price(Chainlink) + 胜负判定，然后重置状态。
-    参考 demo：close >= start → UP ✅ / DOWN ❌（均为 BTC/USD 价格）。
+    Bot 启动时或 RTDS 初始化时调用，设定起始状态。
+    first_tick：边界后第一条 RTDS tick（没有则传 None）。
     """
-    global _prev_window_ts, _prev_start_price, _prev_start_prob, _last_close_price
-    if _prev_window_ts is not None and _prev_start_price is not None and _last_close_price is not None:
-        result = "UP ✅" if _last_close_price >= _prev_start_price else "DOWN ❌"
+    global _prev_window_ts, _prev_start_price, _window_start_price
+    _prev_window_ts = window_ts
+    _prev_start_price = first_tick
+    _window_start_price = None
+
+
+def _on_first_tick_of_new_window(price: float) -> None:
+    """
+    每次 snipe_current_price 被调用时检查是否进入新窗口。
+    若进入新窗口：打印上一窗口 Start/Close/胜负，然后滚动状态。
+    price 是 RTDS Chainlink BTC/USD 价格（边界后第一条 tick）。
+    """
+    global _prev_window_ts, _prev_start_price, _prev_start_prob, _window_start_price
+    current_window = int(time.time()) // WINDOW
+
+    # 首次调用：初始化状态
+    if _prev_window_ts is None:
+        _prev_window_ts = current_window
+        _prev_start_price = price
+        _window_start_price = price
+        return
+
+    if _prev_window_ts == current_window:
+        # 仍在同一窗口
+        if _window_start_price is None:
+            _window_start_price = price
+        return
+
+    # ── 新窗口开始了，打印上一窗口结果 ─────────────────────────
+    if _prev_start_price is not None and _window_start_price is not None:
+        result = "UP ✅" if _window_start_price >= _prev_start_price else "DOWN ❌"
         prob_note = f"（概率={_prev_start_prob:.4f}）" if _prev_start_prob is not None else ""
         print(
             f"\n═══════════════════════════════════════\n"
-            f"  上一窗口 {window_slug(_prev_window_ts)} 结束\n"
+            f"  上一窗口 btc-updown-5m-{_prev_window_ts} 结束\n"
             f"  Start Price(BTC/USD) : ${_prev_start_price:.2f} {prob_note}\n"
-            f"  Close Price(BTC/USD)  : ${_last_close_price:.2f}\n"
-            f"  结果                   : {result}\n"
+            f"  Close Price(BTC/USD) : ${_window_start_price:.2f}\n"
+            f"  结果                 : {result}\n"
             f"═══════════════════════════════════════",
             flush=True,
         )
-    _prev_window_ts = window_ts
-    _prev_start_prob = window_open
-    _prev_start_price = start_price_btc
-    _last_close_price = None
+
+    # 滚动
+    _prev_window_ts = current_window
+    _prev_start_price = _window_start_price if _window_start_price is not None else price
+    _prev_start_prob = None
+    _window_start_price = price
 
 
 def _maybe_refresh_shares_loop(
@@ -1531,7 +1555,6 @@ def snipe_loop(
 
         px = snipe_current_price(chainlink_feed)
         ticks.append(px)
-        _record_close_price(px)
         if arb_hit is not None and arb_hit.is_set():
             raise ArbitrageCycleDone
 
@@ -1569,7 +1592,6 @@ def snipe_loop(
     if best is None:
         px = snipe_current_price(chainlink_feed)
         ticks.append(px)
-        _record_close_price(px)
         best = analyze(candles, tick_prices=ticks) if candles else AnalysisResult(
             direction=0, score=0.0, confidence=0.0, details={"skip_trade": True}
         )
@@ -1650,16 +1672,21 @@ def run_trade_cycle(
         )
         return
 
-    # Demo 逻辑：新窗口开始时打印上一窗口 Start/Close Price + 胜负
-    # window_open 是概率；需要额外获取 BTC/USD 价格用于与 close_price 比较
-    start_price_btc: Optional[float] = None
-    try:
-        ref_btc = fetch_btc_price()
-        if ref_btc > 0 and 0.001 < window_open < 0.999:
-            start_price_btc = ref_btc / (1.0 - window_open)
-    except Exception:
-        pass
-    _on_new_window(window_ts, window_open, start_price_btc, chainlink_feed)
+    # Demo 追踪：窗口开始时用 RTDS boundary 后第一条 tick 初始化
+    # 这条 tick 同时是：当前窗口 Start(BTC) + 上一窗口 Close(BTC)
+    global _prev_start_prob
+    _prev_start_prob = window_open  # Gamma 概率（用于显示）
+    first_rtds_tick: Optional[float] = None
+    if chainlink_feed is not None:
+        tup = chainlink_feed.open_price_at_boundary(window_ts)
+        if tup is not None:
+            first_rtds_tick = float(tup[1])
+            lag_s = max(0.0, (tup[0] - window_ts * 1000) / 1000.0)
+            print(
+                f"  🎯 Start Price (BTC/USD) : ${first_rtds_tick:.2f}  边界后延迟={lag_s:.2f}s",
+                flush=True,
+            )
+    _init_window_tracker(window_ts, first_rtds_tick)
 
     # ── 窗口起点 BTC/USD 参考价（用于后续百分比换算）───────────────────────
     # window_open 是概率（0~1），需要窗口起点的 BTC/USD 价格来统一单位
@@ -1668,8 +1695,7 @@ def run_trade_cycle(
     except Exception:
         window_open_btc_price = None
 
-    print(f"[窗口 {window_ts}] slug={slug} | {mode} | {'干跑' if dry_run else '实盘'} | 开盘={window_open:.2f}", flush=True)
-    print(f"  开盘={window_open:.2f} | 来源={open_how[:40]}", flush=True)
+    print(f"[窗口 {window_ts}] slug={slug} | {mode} | {'干跑' if dry_run else '实盘'} | 开盘(概率)={window_open:.4f} | 来源={open_how[:50]}", flush=True)
 
     # ── 套利探测（周期开头）───────────────────────────────
     if log_up_down_ask_spread(window_ts, up_tid, down_tid, client, dry_run, state):
