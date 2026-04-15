@@ -42,6 +42,11 @@ except ImportError:
     load_workbook = None  # type: ignore
     Workbook = None  # type: ignore
 
+try:
+    import trading_journal as tj
+except ImportError:
+    tj = None  # type: ignore
+
 load_dotenv()
 
 # 结构化/分级日志（控制台 + 可选 LOG_FILE）；关键中文提示仍可用 print。
@@ -1478,6 +1483,38 @@ def snipe_loop(
     return best, ticks
 
 
+def _skip_and_journal(
+    window_ts: int,
+    mode: str,
+    window_open: float,
+    open_how: str,
+    up_ask: Optional[float],
+    down_ask: Optional[float],
+    score: float,
+    confidence: float,
+    direction: int,
+    reason: str,
+) -> None:
+    """统一打印跳过原因并写入每日交易日志（trading_journal.csv）。"""
+    print(f"[窗口 {window_ts}] 跳过：{reason}", flush=True)
+    if tj is not None:
+        tj.write_journal_open(
+            window_ts=window_ts,
+            mode=mode,
+            score=score,
+            confidence=confidence,
+            direction=direction,
+            skip_reason=reason,
+            up_ask=up_ask,
+            down_ask=down_ask,
+            window_open=window_open,
+            open_source=open_how,
+            bet=0.0,
+            entry=0.0,
+            decided=False,
+        )
+
+
 def run_trade_cycle(
     client: Optional[Any],
     state: BotState,
@@ -1496,7 +1533,12 @@ def run_trade_cycle(
     try:
         window_open, open_how = window_open_oracle(window_ts, chainlink_feed)
     except Exception as e:
-        print(f"[跳过] 开盘价获取失败: {e}", flush=True)
+        _skip_and_journal(
+            window_ts=window_ts, mode=mode, window_open=0.0, open_how="",
+            up_ask=None, down_ask=None,
+            score=0.0, confidence=0.0, direction=0,
+            reason=f"开盘价获取失败: {e}",
+        )
         return
 
     print(f"[窗口 {window_ts}] slug={slug} | {mode} | {'干跑' if dry_run else '实盘'} | 开盘={window_open:.2f}", flush=True)
@@ -1570,6 +1612,7 @@ def run_trade_cycle(
         )
     except ArbitrageCycleDone:
         book_thread.join(timeout=1.0)
+        # 套利命中退出 → 不记录 journal（套利不在 journal 追踪范围内）
         return
     finally:
         stop_arb.set()
@@ -1587,34 +1630,66 @@ def run_trade_cycle(
 
     # ── 方向过滤 ─────────────────────────────────────
     if decision.details.get("skip_trade"):
-        print(f"[窗口 {window_ts}] 跳过：置信不足 {decision.confidence:.2f} < {min_confidence_for_mode(mode):.2f}", flush=True)
+        _skip_and_journal(
+            window_ts=window_ts, mode=mode, window_open=window_open, open_how=open_how,
+            up_ask=None, down_ask=None,
+            score=float(decision.score), confidence=float(decision.confidence),
+            direction=int(decision.direction),
+            reason=f"狙击提前退出 置信不足 {decision.confidence:.2f} < {min_confidence_for_mode(mode):.2f}",
+        )
         return
 
     with _BOT_STATE_LOCK:
         if _loss_streak_should_pause(state):
-            print(f"[窗口 {window_ts}] 跳过：连亏冷却", flush=True)
+            _skip_and_journal(
+                window_ts=window_ts, mode=mode, window_open=window_open, open_how=open_how,
+                up_ask=None, down_ask=None,
+                score=float(decision.score), confidence=float(decision.confidence),
+                direction=int(decision.direction),
+                reason="连亏冷却",
+            )
             return
 
     # ── 盘口检查（复用预取数据；若预取失败则快速重试一次）─────────────────
-    # 注意：干跑时跳过盘口检查——干跑无真实持仓，不需要流动性闸值
     px_decide = ticks[-1] if ticks else snipe_current_price(chainlink_feed)
+    w_pct = (px_decide - window_open) / window_open * 100.0
+    up_ask: Optional[float] = None
+    down_ask: Optional[float] = None
     if not dry_run:
         up_ask = up_ask_pre[0] if up_ask_pre[0] is not None else get_best_ask(up_tid, client)
         down_ask = down_ask_pre[0] if down_ask_pre[0] is not None else get_best_ask(down_tid, client)
         mx_sum = _direction_orderbook_max_sum()
         if mx_sum is not None:
             if up_ask is None or down_ask is None:
-                print(f"[窗口 {window_ts}] 跳过：盘口不全", flush=True)
+                _skip_and_journal(
+                    window_ts=window_ts, mode=mode, window_open=window_open, open_how=open_how,
+                    up_ask=None, down_ask=None,
+                    score=float(decision.score), confidence=float(decision.confidence),
+                    direction=int(decision.direction),
+                    reason="盘口不全",
+                )
                 return
             if float(up_ask) + float(down_ask) > mx_sum:
-                print(f"[窗口 {window_ts}] 跳过：盘口过贵 {float(up_ask)+float(down_ask):.3f} > {mx_sum}", flush=True)
+                _skip_and_journal(
+                    window_ts=window_ts, mode=mode, window_open=window_open, open_how=open_how,
+                    up_ask=up_ask, down_ask=down_ask,
+                    score=float(decision.score), confidence=float(decision.confidence),
+                    direction=int(decision.direction),
+                    reason=f"盘口过贵 {float(up_ask)+float(down_ask):.3f} > {mx_sum}",
+                )
                 return
 
         only_lt = _direction_only_when_book_sum_lt()
         if only_lt is not None and up_ask is not None and down_ask is not None:
             s = float(up_ask) + float(down_ask)
             if s >= only_lt:
-                print(f"[窗口 {window_ts}] 跳过：低价差 {s:.3f} >= {only_lt}", flush=True)
+                _skip_and_journal(
+                    window_ts=window_ts, mode=mode, window_open=window_open, open_how=open_how,
+                    up_ask=up_ask, down_ask=down_ask,
+                    score=float(decision.score), confidence=float(decision.confidence),
+                    direction=int(decision.direction),
+                    reason=f"低价差 {s:.3f} >= {only_lt}",
+                )
                 return
 
     if _direction_strategy() == "imbalance":
@@ -1622,12 +1697,24 @@ def run_trade_cycle(
         imbu = get_orderbook_imbalance(up_tid, client, depth)
         imbd = get_orderbook_imbalance(down_tid, client, depth)
         if imbu is None or imbd is None:
-            print(f"[窗口 {window_ts}] 跳过：无法读取盘口失衡", flush=True)
+            _skip_and_journal(
+                window_ts=window_ts, mode=mode, window_open=window_open, open_how=open_how,
+                up_ask=up_ask, down_ask=down_ask,
+                score=float(decision.score), confidence=float(decision.confidence),
+                direction=int(decision.direction),
+                reason="无法读取盘口失衡",
+            )
             return
         th_imb = _imbalance_threshold()
         d = decide_from_imbalance(imbu, imbd, th_imb)
         if d == 0:
-            print(f"[窗口 {window_ts}] 跳过：无明显单侧优势", flush=True)
+            _skip_and_journal(
+                window_ts=window_ts, mode=mode, window_open=window_open, open_how=open_how,
+                up_ask=up_ask, down_ask=down_ask,
+                score=float(decision.score), confidence=float(decision.confidence),
+                direction=0,
+                reason=f"无明显单侧优势(imb_up={imbu:.2f} imb_dn={imbd:.2f} thr={th_imb})",
+            )
             return
         syn_conf = min(1.0, max(abs(imbu), abs(imbd)) / max(th_imb, 1e-6))
         decision = replace(
@@ -1635,18 +1722,20 @@ def run_trade_cycle(
             direction=int(d),
             score=float(d) * 10.0,
             confidence=float(syn_conf),
-            details={
-                **decision.details,
-                "direction_strategy": "imbalance",
-                "imb_up": float(imbu),
-                "imb_down": float(imbd),
-            },
+            details={**decision.details, "direction_strategy": "imbalance",
+                     "imb_up": float(imbu), "imb_down": float(imbd)},
         )
     elif _direction_strategy() == "reversal":
         th = _reversal_min_abs_pct()
         d = decide_reversal_direction(window_open, px_decide, min_abs_pct=th)
         if d == 0:
-            print(f"[窗口 {window_ts}] 跳过：反转偏离不足", flush=True)
+            _skip_and_journal(
+                window_ts=window_ts, mode=mode, window_open=window_open, open_how=open_how,
+                up_ask=up_ask, down_ask=down_ask,
+                score=float(decision.score), confidence=float(decision.confidence),
+                direction=0,
+                reason=f"反转偏离不足(偏离={w_pct:+.3f}% thr={th}%)",
+            )
             return
         w_pct_r = (px_decide - window_open) / window_open * 100.0
         syn_conf = min(1.0, abs(w_pct_r) / max(th, 1e-9))
@@ -1655,30 +1744,43 @@ def run_trade_cycle(
             direction=int(d),
             score=float(d) * 10.0,
             confidence=float(syn_conf),
-            details={
-                **decision.details,
-                "direction_strategy": "reversal",
-                "reversal_w_pct": w_pct_r,
-            },
+            details={**decision.details, "direction_strategy": "reversal", "reversal_w_pct": w_pct_r},
         )
     else:
         min_dc = _min_decision_confidence()
         min_score = _min_abs_score()
         if min_score > 0.0 and abs(float(decision.score)) < min_score:
-            print(f"[窗口 {window_ts}] 跳过：|score| {abs(decision.score):.2f} < {min_score}", flush=True)
+            _skip_and_journal(
+                window_ts=window_ts, mode=mode, window_open=window_open, open_how=open_how,
+                up_ask=up_ask, down_ask=down_ask,
+                score=float(decision.score), confidence=float(decision.confidence),
+                direction=int(decision.direction),
+                reason=f"|score| {abs(decision.score):.2f} < {min_score}",
+            )
             return
         if min_dc > 0.0 and float(decision.confidence) < min_dc:
-            print(f"[窗口 {window_ts}] 跳过：置信度 {decision.confidence:.2f} < {min_dc:.2f}", flush=True)
+            _skip_and_journal(
+                window_ts=window_ts, mode=mode, window_open=window_open, open_how=open_how,
+                up_ask=up_ask, down_ask=down_ask,
+                score=float(decision.score), confidence=float(decision.confidence),
+                direction=int(decision.direction),
+                reason=f"置信度 {decision.confidence:.2f} < {min_dc:.2f}",
+            )
             return
 
     # ── 计算下注金额 ─────────────────────────────────
     token_up = decision.direction == 1
     token_id = up_tid if token_up else down_tid
-    w_pct = (px_decide - window_open) / window_open * 100.0
     if _use_book_ask_for_entry():
         entry = entry_from_best_asks(int(decision.direction), up_ask, down_ask)
         if entry is None or entry > 0.97:
-            print(f"[窗口 {window_ts}] 跳过：入场价 {entry:.3f} 不可用或过贵", flush=True)
+            _skip_and_journal(
+                window_ts=window_ts, mode=mode, window_open=window_open, open_how=open_how,
+                up_ask=up_ask, down_ask=down_ask,
+                score=float(decision.score), confidence=float(decision.confidence),
+                direction=int(decision.direction),
+                reason=f"入场价不可用/过贵 entry={entry}",
+            )
             return
     else:
         entry = directional_entry_from_window_pct(int(decision.direction), w_pct)
@@ -1688,14 +1790,26 @@ def run_trade_cycle(
     if mwall is not None:
         tl = float(close_at) - now()
         if tl < float(mwall):
-            print(f"[窗口 {window_ts}] 跳过：距收盘 {tl:.1f}s < {mwall}s", flush=True)
+            _skip_and_journal(
+                window_ts=window_ts, mode=mode, window_open=window_open, open_how=open_how,
+                up_ask=up_ask, down_ask=down_ask,
+                score=float(decision.score), confidence=float(decision.confidence),
+                direction=int(decision.direction),
+                reason=f"距收盘 {tl:.1f}s < {mwall}s",
+            )
             return
 
     if _use_fair_prob_edge():
         fair = estimate_fair_prob(decision.confidence, int(decision.direction))
         ok_e, edgev = has_price_edge(int(decision.direction), float(entry), fair, _min_price_edge())
         if not ok_e:
-            print(f"[窗口 {window_ts}] 跳过：无概率优势 edge={edgev:.4f}", flush=True)
+            _skip_and_journal(
+                window_ts=window_ts, mode=mode, window_open=window_open, open_how=open_how,
+                up_ask=up_ask, down_ask=down_ask,
+                score=float(decision.score), confidence=float(decision.confidence),
+                direction=int(decision.direction),
+                reason=f"无概率优势 edge={edgev:.4f}",
+            )
             return
         edge_for_sizing = float(edgev)
 
@@ -1703,31 +1817,70 @@ def run_trade_cycle(
     fix_usd = _fixed_directional_usd()
     with _BOT_STATE_LOCK:
         if state.bankroll < min_bet:
-            print(f"[窗口 {window_ts}] 跳过：资金不足 {state.bankroll:.2f} < {min_bet}", flush=True)
+            _skip_and_journal(
+                window_ts=window_ts, mode=mode, window_open=window_open, open_how=open_how,
+                up_ask=up_ask, down_ask=down_ask,
+                score=float(decision.score), confidence=float(decision.confidence),
+                direction=int(decision.direction),
+                reason=f"资金不足 {state.bankroll:.2f} < {min_bet}",
+            )
             return
         if fix_usd is not None:
             bet = min(fix_usd, cap_mx or float("inf"), state.bankroll)
             if bet < min_bet:
+                _skip_and_journal(
+                    window_ts=window_ts, mode=mode, window_open=window_open, open_how=open_how,
+                    up_ask=up_ask, down_ask=down_ask,
+                    score=float(decision.score), confidence=float(decision.confidence),
+                    direction=int(decision.direction),
+                    reason=f"下注金额不足 ${bet:.2f} < ${min_bet}",
+                )
                 return
         elif _enable_kelly():
             bet = _kelly_directional_bet(state.bankroll, decision.confidence, min_bet, cap_mx)
             if bet is None:
+                _skip_and_journal(
+                    window_ts=window_ts, mode=mode, window_open=window_open, open_how=open_how,
+                    up_ask=up_ask, down_ask=down_ask,
+                    score=float(decision.score), confidence=float(decision.confidence),
+                    direction=int(decision.direction),
+                    reason="Kelly 计算返回 None",
+                )
                 return
         elif _use_edge_position_sizing() and edge_for_sizing is not None:
             bet = size_by_edge(state.bankroll, edge_for_sizing, cap_mx, min_bet)
             if bet < min_bet:
+                _skip_and_journal(
+                    window_ts=window_ts, mode=mode, window_open=window_open, open_how=open_how,
+                    up_ask=up_ask, down_ask=down_ask,
+                    score=float(decision.score), confidence=float(decision.confidence),
+                    direction=int(decision.direction),
+                    reason=f"edge 下注 ${bet:.2f} < ${min_bet}",
+                )
                 return
         else:
             raw_bet = compute_bet(mode, state.bankroll, state.principal, min_bet)
             if raw_bet <= 0:
+                _skip_and_journal(
+                    window_ts=window_ts, mode=mode, window_open=window_open, open_how=open_how,
+                    up_ask=up_ask, down_ask=down_ask,
+                    score=float(decision.score), confidence=float(decision.confidence),
+                    direction=int(decision.direction),
+                    reason="compute_bet() <= 0",
+                )
                 return
             bet = raw_bet
             if cap_mx is not None:
                 bet = min(bet, cap_mx)
             if bet < min_bet:
+                _skip_and_journal(
+                    window_ts=window_ts, mode=mode, window_open=window_open, open_how=open_how,
+                    up_ask=up_ask, down_ask=down_ask,
+                    score=float(decision.score), confidence=float(decision.confidence),
+                    direction=int(decision.direction),
+                    reason=f"cap 后下注 ${bet:.2f} < ${min_bet}",
+                )
                 return
-            if cap_mx is not None and raw_bet > cap_mx:
-                pass  # 已在下注行打印
 
     sig_cn = "涨" if token_up else "跌"
     print(f"[信号] {sig_cn} | score={decision.score:+.2f} conf={decision.confidence:.2f} | 入场={entry:.3f} 下注=${bet:.2f} | 偏离={w_pct:+.3f}%", flush=True)
@@ -1755,6 +1908,19 @@ def run_trade_cycle(
         if not placed:
             print("  → 下单超时，本窗结束", flush=True)
             return
+
+    # ── 写 journal（下单成功）──────────────────────────────────────────────
+    if tj is not None:
+        tj.write_journal_open(
+            window_ts=window_ts, mode=mode,
+            score=float(decision.score), confidence=float(decision.confidence),
+            direction=int(decision.direction),
+            skip_reason="",
+            up_ask=up_ask, down_ask=down_ask,
+            window_open=window_open, open_source=open_how,
+            bet=float(bet), entry=float(entry),
+            decided=True,
+        )
 
     # ── 扣款 & 入队结算 ───────────────────────────────
     with _BOT_STATE_LOCK:
@@ -1803,6 +1969,18 @@ def run_trade_cycle(
             f"  余额: {bankroll_before:.2f} → {bankroll_after:.2f}",
             sep="\n  ", flush=True,
         )
+        # 干跑下单成功也写 journal
+        if tj is not None:
+            tj.write_journal_open(
+                window_ts=window_ts, mode=mode,
+                score=float(decision.score), confidence=float(decision.confidence),
+                direction=int(decision.direction),
+                skip_reason="",
+                up_ask=None, down_ask=None,
+                window_open=window_open, open_source=open_how,
+                bet=float(bet), entry=float(entry),
+                decided=True,
+            )
         return
 
     hint_after = float(os.environ.get("LIVE_REDEEM_HINT_AFTER_S", "2"))
@@ -2262,6 +2440,20 @@ def _apply_queued_dry_settle(job: QueuedDrySettle, state: BotState) -> None:
             score=job.decision_score,
             confidence=job.decision_confidence,
         )
+        # ── 同步更新 journal CSV ──────────────────────────────
+        if tj is not None:
+            initial = _SESSION_INITIAL_BANKROLL or 50.0
+            cum_pnl = state.bankroll - initial
+            tj.update_journal_settled(
+                window_ts=job.window_ts,
+                actual=actual,
+                win=win,
+                settle_payout=settle_payout,
+                bankroll_before=post_bet_bankroll,
+                bankroll_after=state.bankroll,
+                cum_pnl=cum_pnl,
+                settle_method=settle_method,
+            )
         if job.settle_done is not None:
             job.settle_done.set()
 
