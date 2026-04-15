@@ -1,122 +1,2306 @@
 {
-  "1776197700": {
+  "1776032700": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776033000": {
     "closed": true,
     "resolution": "Up"
+  },
+  "1776033300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776033600": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776033900": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776034200": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776034500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776034800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776035100": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776035400": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776035700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776036000": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776036300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776036600": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776036900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776037200": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776037500": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776037800": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776038100": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776038400": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776038700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776039000": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776039300": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776039600": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776039900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776040200": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776040500": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776040800": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776041100": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776041400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776041700": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776042000": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776042300": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776042600": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776042900": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776043200": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776043500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776043800": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776044100": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776044400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776044700": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776045000": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776045300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776045600": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776045900": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776046200": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776046500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776046800": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776047100": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776047400": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776047700": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776048000": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776048300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776048600": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776048900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776049200": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776049500": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776049800": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776050100": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776050400": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776050700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776051000": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776051300": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776051600": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776051900": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776052200": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776052500": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776052800": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776053100": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776053400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776053700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776054000": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776054300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776054600": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776054900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776055200": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776055500": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776055800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776056100": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776056400": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776056700": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776057000": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776057300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776057600": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776057900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776058200": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776058500": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776058800": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776059100": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776059400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776059700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776060000": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776060300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776060600": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776060900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776061200": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776061500": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776061800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776062100": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776062400": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776062700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776063000": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776063300": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776063600": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776063900": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776064200": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776064500": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776064800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776065100": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776065400": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776065700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776066000": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776066300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776066600": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776066900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776067200": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776067500": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776067800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776068100": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776068400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776068700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776069000": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776069300": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776069600": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776069900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776070200": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776070500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776070800": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776071100": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776071400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776071700": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776072000": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776072300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776072600": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776072900": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776073200": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776073500": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776073800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776074100": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776074400": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776074700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776075000": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776075300": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776075600": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776075900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776076200": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776076500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776076800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776077100": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776077400": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776077700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776078000": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776078300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776078600": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776078900": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776079200": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776079500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776079800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776080100": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776080400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776080700": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776081000": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776081300": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776081600": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776081900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776082200": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776082500": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776082800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776083100": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776083400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776083700": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776084000": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776084300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776084600": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776084900": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776085200": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776085500": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776085800": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776086100": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776086400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776086700": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776087000": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776087300": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776087600": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776087900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776088200": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776088500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776088800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776089100": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776089400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776089700": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776090000": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776090300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776090600": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776090900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776091200": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776091500": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776091800": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776092100": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776092400": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776092700": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776093000": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776093300": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776093600": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776093900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776094200": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776094500": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776094800": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776095100": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776095400": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776095700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776096000": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776096300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776096600": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776096900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776097200": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776097500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776097800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776098100": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776098400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776098700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776099000": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776099300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776099600": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776099900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776100200": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776100500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776100800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776101100": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776101400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776101700": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776102000": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776102300": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776102600": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776102900": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776103200": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776103500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776103800": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776104100": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776104400": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776104700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776105000": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776105300": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776105600": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776105900": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776106200": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776106500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776106800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776107100": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776107400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776107700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776108000": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776108300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776108600": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776108900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776109200": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776109500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776109800": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776110100": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776110400": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776110700": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776111000": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776111300": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776111600": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776111900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776112200": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776112500": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776112800": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776113100": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776113400": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776113700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776114000": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776114300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776114600": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776114900": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776115200": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776115500": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776115800": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776116100": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776116400": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776116700": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776117000": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776117300": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776117600": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776117900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776118200": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776118500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776118800": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776119100": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776119400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776119700": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776120000": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776120300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776120600": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776120900": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776121200": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776121500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776121800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776122100": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776122400": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776122700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776123000": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776123300": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776123600": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776123900": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776124200": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776124500": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776124800": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776125100": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776125400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776125700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776126000": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776126300": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776126600": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776126900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776127200": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776127500": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776127800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776128100": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776128400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776128700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776129000": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776129300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776129600": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776129900": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776130200": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776130500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776130800": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776131100": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776131400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776131700": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776132000": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776132300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776132600": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776132900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776133200": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776133500": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776133800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776134100": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776134400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776134700": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776135000": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776135300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776135600": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776135900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776136200": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776136500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776136800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776137100": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776137400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776137700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776138000": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776138300": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776138600": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776138900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776139200": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776139500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776139800": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776140100": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776140400": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776140700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776141000": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776141300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776141600": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776141900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776142200": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776142500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776142800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776143100": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776143400": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776143700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776144000": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776144300": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776144600": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776144900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776145200": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776145500": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776145800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776146100": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776146400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776146700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776147000": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776147300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776147600": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776147900": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776148200": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776148500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776148800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776149100": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776149400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776149700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776150000": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776150300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776150600": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776150900": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776151200": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776151500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776151800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776152100": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776152400": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776152700": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776153000": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776153300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776153600": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776153900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776154200": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776154500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776154800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776155100": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776155400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776155700": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776156000": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776156300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776156600": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776156900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776157200": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776157500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776157800": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776158100": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776158400": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776158700": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776159000": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776159300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776159600": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776159900": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776160200": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776160500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776160800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776161100": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776161400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776161700": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776162000": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776162300": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776162600": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776162900": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776163200": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776163500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776163800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776164100": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776164400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776164700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776165000": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776165300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776165600": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776165900": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776166200": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776166500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776166800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776167100": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776167400": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776167700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776168000": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776168300": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776168600": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776168900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776169200": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776169500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776169800": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776170100": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776170400": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776170700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776171000": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776171300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776171600": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776171900": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776172200": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776172500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776172800": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776173100": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776173400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776173700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776174000": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776174300": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776174600": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776174900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776175200": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776175500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776175800": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776176100": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776176400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776176700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776177000": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776177300": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776177600": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776177900": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776178200": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776178500": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776178800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776179100": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776179400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776179700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776180000": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776180300": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776180600": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776180900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776181200": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776181500": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776181800": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776182100": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776182400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776182700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776183000": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776183300": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776183600": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776183900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776184200": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776184500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776184800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776185100": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776185400": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776185700": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776186000": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776186300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776186600": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776186900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776187200": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776187500": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776187800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776188100": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776188400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776188700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776189000": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776189300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776189600": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776189900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776190200": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776190500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776190800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776191100": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776191400": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776191700": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776192000": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776192300": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776192600": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776192900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776193200": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776193500": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776193800": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776194100": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776194400": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776194700": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776195000": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776195300": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776195600": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776195900": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776196200": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776196500": {
+    "closed": true,
+    "resolution": "Down"
+  },
+  "1776196800": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776197100": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776197400": {
+    "closed": true,
+    "resolution": "Up"
+  },
+  "1776197700": {
+    "closed": true,
+    "resolution": "Down"
   },
   "1776198000": {
     "closed": true,
-    "resolution": "Up"
+    "resolution": "Down"
   },
   "1776198300": {
     "closed": true,
-    "resolution": "Up"
+    "resolution": "Down"
   },
   "1776198600": {
     "closed": true,
-    "resolution": "Down"
+    "resolution": "Up"
   },
   "1776198900": {
     "closed": true,
-    "resolution": "Up"
+    "resolution": "Down"
   },
   "1776199200": {
     "closed": true,
-    "resolution": "Down"
+    "resolution": "Up"
   },
   "1776199500": {
     "closed": true,
-    "resolution": "Up"
+    "resolution": "Down"
   },
   "1776199800": {
     "closed": true,
-    "resolution": "Up"
+    "resolution": "Down"
   },
   "1776200100": {
     "closed": true,
-    "resolution": "Up"
+    "resolution": "Down"
   },
   "1776200400": {
     "closed": true,
-    "resolution": "Down"
+    "resolution": "Up"
   },
   "1776200700": {
-    "closed": false,
-    "resolution": "Up"
+    "closed": true,
+    "resolution": "Down"
   },
   "1776201000": {
-    "closed": false,
-    "resolution": "Up"
+    "closed": true,
+    "resolution": "Down"
   },
   "1776201300": {
-    "closed": false,
+    "closed": true,
     "resolution": "Down"
   },
   "1776201600": {
-    "closed": false,
-    "resolution": "Up"
-  },
-  "1776201900": {
-    "closed": false,
+    "closed": true,
     "resolution": "Down"
   },
+  "1776201900": {
+    "closed": true,
+    "resolution": "Up"
+  },
   "1776202200": {
-    "closed": false,
+    "closed": true,
     "resolution": "Down"
   },
   "1776202500": {
-    "closed": false,
+    "closed": true,
     "resolution": "Down"
   },
   "1776202800": {
-    "closed": false,
+    "closed": true,
     "resolution": "Down"
   },
   "1776203100": {
-    "closed": false,
+    "closed": true,
     "resolution": "Down"
   },
   "1776203400": {
-    "closed": false,
-    "resolution": "Down"
+    "closed": true,
+    "resolution": "Up"
   },
   "1776203700": {
-    "closed": false,
-    "resolution": "Down"
+    "closed": true,
+    "resolution": "Up"
   },
   "1776204000": {
-    "closed": false,
+    "closed": true,
     "resolution": "Down"
   },
   "1776204300": {
-    "closed": false,
-    "resolution": "Down"
+    "closed": true,
+    "resolution": "Up"
   },
   "1776204600": {
-    "closed": false,
+    "closed": true,
     "resolution": "Down"
   },
   "1776204900": {
-    "closed": false,
+    "closed": true,
     "resolution": "Down"
   },
   "1776205200": {
-    "closed": false,
-    "resolution": "Down"
-  },
-  "1776205500": {
-    "closed": false,
-    "resolution": "Down"
-  },
-  "1776205800": {
-    "closed": false,
-    "resolution": "Down"
-  },
-  "1776206100": {
-    "closed": false,
-    "resolution": "Down"
-  },
-  "1776206400": {
-    "closed": false,
+    "closed": true,
     "resolution": "Down"
   }
 }

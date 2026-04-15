@@ -61,6 +61,10 @@ def main():
 
         dt = datetime.fromtimestamp(window_ts, tz=timezone.utc)
 
+        # 计算盈亏（与 compare_runs.py simulate() 逻辑一致）
+        shares = trade["bet"] / trade["entry"] if trade["entry"] > 0 else 0.0
+        pnl = (shares - trade["bet"]) if trade["win"] else (-trade["bet"])
+
         comparison.append({
             "序号": len(comparison) + 1,
             "窗口时间(UTC)": dt.strftime("%m-%d %H:%M"),
@@ -70,6 +74,10 @@ def main():
             "是否正确": "正确" if correct else "错误",
             "置信度": round(trade["conf"], 2),
             "得分": round(trade["score"], 1),
+            "入场价": round(trade["entry"], 4),
+            "下注金额": round(trade["bet"], 4),
+            "盈亏": round(pnl, 4),
+            "胜负": "赢" if trade["win"] else "输",
         })
 
     # 4. 打印对比
@@ -81,14 +89,18 @@ def main():
     print(f"预测准确率: {matches/total*100:.1f}%" if total else "N/A")
     print("-" * 80)
 
-    print(f"{'序号':>4} | {'时间(UTC)':>12} | {'Poly结果':^10} | {'回测预测':^10} | {'正确':^6} | {'置信度':^6}")
-    print("-" * 80)
+    print(f"{'序号':>4} | {'时间(UTC)':>12} | {'Poly结果':^8} | {'回测预测':^8} | {'正确':^6} | {'置信度':^6} | {'入场价':>8} | {'下注':>8} | {'盈亏':>8}")
+    print("-" * 90)
 
+    total_pnl = 0.0
     for row in comparison:
+        total_pnl += row["盈亏"]
         correct_mark = "O" if row["是否正确"] == "正确" else "X"
-        print(f"{row['序号']:>4}. | {row['窗口时间(UTC)']:>12} | {row['Polymarket结果']:^10} | {row['回测预测']:^10} | {correct_mark:^6} | {row['置信度']:>6.2f}")
+        pnl_s = f"{row['盈亏']:+.4f}"
+        print(f"{row['序号']:>4}. | {row['窗口时间(UTC)']:>12} | {row['Polymarket结果']:^8} | {row['回测预测']:^8} | {correct_mark:^6} | {row['置信度']:>6.2f} | {row['入场价']:>8.4f} | {row['下注金额']:>8.4f} | {pnl_s:>8}")
 
-    print("-" * 80)
+    print("-" * 90)
+    print(f"总盈亏: {total_pnl:+.4f}   终资金: {100.0 + total_pnl:.4f}")
 
     # 5. 按预测方向分组统计
     pred_up_list = [r for r in comparison if r["预测方向"] == "涨"]
@@ -110,11 +122,14 @@ def main():
     ws.title = "预测对比"
 
     # 表头
-    headers = ["序号", "窗口时间(UTC)", "Polymarket结果", "回测预测", "预测方向", "是否正确", "置信度", "得分"]
+    headers = ["序号", "窗口时间(UTC)", "Polymarket结果", "回测预测", "预测方向", "是否正确",
+               "置信度", "得分", "入场价", "下注金额", "盈亏", "胜负"]
     ws.append(headers)
 
     # 数据
+    total_pnl = 0.0
     for row in comparison:
+        total_pnl += row["盈亏"]
         ws.append([
             row["序号"],
             row["窗口时间(UTC)"],
@@ -124,6 +139,10 @@ def main():
             row["是否正确"],
             row["置信度"],
             row["得分"],
+            row["入场价"],
+            row["下注金额"],
+            row["盈亏"],
+            row["胜负"],
         ])
 
     # 统计表
@@ -132,6 +151,8 @@ def main():
     ws.append(["对比窗口总数", total])
     ws.append(["预测正确数", matches])
     ws.append(["预测准确率", f"{matches/total*100:.1f}%" if total else "N/A"])
+    ws.append(["总盈亏", f"{total_pnl:+.4f}"])
+    ws.append(["终资金（flat_0.1）", f"{100.0 + total_pnl:.4f}"])
     ws.append([])
     ws.append(["预测涨次数", len(pred_up_list)])
     ws.append(["预测涨准确率", f"{up_correct/len(pred_up_list)*100:.0f}%" if pred_up_list else "N/A"])
@@ -153,12 +174,15 @@ def main():
     print("=" * 80)
     if total > 0:
         accuracy = matches / total * 100
+        total_pnl_final = sum(r["盈亏"] for r in comparison)
+        final_bankroll = 100.0 + total_pnl_final
         if accuracy < 40:
             print(f"  回测准确率 {accuracy:.1f}% 低于随机（50%），策略需要改进！")
         elif accuracy < 55:
             print(f"  回测准确率 {accuracy:.1f}% 接近随机，略低于预期。")
         else:
             print(f"  回测准确率 {accuracy:.1f}% 表现良好！")
+        print(f"  总盈亏: {total_pnl_final:+.4f}   终资金: {final_bankroll:.4f} ({final_bankroll/100:.2%})")
 
 
 if __name__ == "__main__":
