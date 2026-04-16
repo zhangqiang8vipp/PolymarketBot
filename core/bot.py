@@ -1758,43 +1758,70 @@ def run_trade_cycle(
     first_rtds_tick: Optional[float] = None
     ts_sec_now: int = int(time.time())
     open_source = "RTDS-tick"
+    window_open_btc_price: Optional[float] = None
     if chainlink_feed is not None:
+        # 先检查缓冲内是否有边界后的 tick
         tup = chainlink_feed.open_price_at_boundary(window_ts, fallback_before=True)
         if tup is not None:
             ts_ms = int(tup[0])
             price = float(tup[1])
             ts_sec = ts_ms // 1000
             lag_s = (ts_ms - window_ts * 1000) / 1000.0
-            aligned = (ts_sec % WINDOW) <= 2
             if lag_s < 0:
                 open_source = "RTDS-fallback"
             if _window_tracker.current_window is None:
                 # 首次初始化
                 _window_tracker.current_window = window_ts
                 _window_tracker.open_price = price
-                _window_tracker.valid = aligned
-                print(f"  🎯 开盘(BTC/USD)=${price:.2f}  边界后={lag_s:.2f}s  aligned={aligned} [{open_source}]", flush=True)
+                _window_tracker.valid = True
+                print(f"  🎯 开盘(BTC/USD)=${price:.2f}  边界后={lag_s:.2f}s  aligned=True [{open_source}]", flush=True)
             else:
                 # 窗口切换：on_tick 检测到 current_window != window，打印上一窗口结果
                 _window_tracker.on_tick(price, ts_sec)
                 _window_tracker.open_price = price  # 重置新窗口 open
-                _window_tracker.valid = aligned
-                print(f"  🎯 开盘(BTC/USD)=${price:.2f}  边界后={lag_s:.2f}s  aligned={aligned} [{open_source}]", flush=True)
+                _window_tracker.valid = True
+                print(f"  🎯 开盘(BTC/USD)=${price:.2f}  边界后={lag_s:.2f}s  aligned=True [{open_source}]", flush=True)
+            window_open_btc_price = price
         else:
-            print(f"  ⚠️ 无边界附近 RTDS tick（缓冲内无可用数据），窗口追踪未初始化", flush=True)
+            # 缓冲内无边界后 tick，检查窗口是否刚开始（<60秒），可以等待
+            wait_s = float(os.environ.get("CHAINLINK_OPEN_WAIT_S", "60"))
+            elapsed_s = now() - window_ts
+            if elapsed_s < wait_s:
+                try:
+                    price = chainlink_feed.wait_first_price_at_or_after(
+                        window_ts, timeout_s=wait_s - elapsed_s, poll_s=0.5
+                    )
+                    ts_sec = int(time.time())
+                    lag_s = ts_sec - window_ts
+                    if _window_tracker.current_window is None:
+                        _window_tracker.current_window = window_ts
+                        _window_tracker.open_price = price
+                        _window_tracker.valid = True
+                    else:
+                        _window_tracker.on_tick(price, ts_sec)
+                        _window_tracker.open_price = price
+                        _window_tracker.valid = True
+                    open_source = "RTDS-wait"
+                    print(f"  🎯 开盘(BTC/USD)=${price:.2f}  边界后={lag_s}s  aligned=True [{open_source}]", flush=True)
+                    window_open_btc_price = price
+                except TimeoutError:
+                    print(f"  ⚠️ 等待边界后RTDS tick超时({wait_s}s)，改用Binance开盘价", flush=True)
+            else:
+                print(f"  ⚠️ 窗口已过{elapsed_s:.0f}s>={wait_s}s，无边界后RTDS tick，改用Binance开盘价", flush=True)
 
     # ── 窗口起点 BTC/USD 参考价（用于后续百分比换算）───────────────────────
     # 优先用 RTDS tick 记录的窗口开盘价，与 Demo 一致
     # 只有当 RTDS 未初始化时才用 Binance 回退
-    if _window_tracker.current_window == window_ts and _window_tracker.open_price is not None:
-        window_open_btc_price = _window_tracker.open_price
-        print(f"  [窗口开盘价] RTDS tick=${window_open_btc_price:.2f}", flush=True)
-    else:
-        try:
-            window_open_btc_price = fetch_btc_price()
-            print(f"  [窗口开盘价] Binance=${window_open_btc_price:.2f} (RTDS未就绪)", flush=True)
-        except Exception:
-            window_open_btc_price = None
+    if window_open_btc_price is None:
+        if _window_tracker.current_window == window_ts and _window_tracker.open_price is not None:
+            window_open_btc_price = _window_tracker.open_price
+            print(f"  [窗口开盘价] RTDS tick=${window_open_btc_price:.2f}", flush=True)
+        else:
+            try:
+                window_open_btc_price = fetch_btc_price()
+                print(f"  [窗口开盘价] Binance=${window_open_btc_price:.2f} (RTDS未就绪)", flush=True)
+            except Exception:
+                window_open_btc_price = None
 
     print(f"[窗口 {window_ts}] slug={slug} | {mode} | {'干跑' if dry_run else '实盘'} | 开盘(概率)={window_open:.4f} | 来源={open_how[:50]}", flush=True)
 
