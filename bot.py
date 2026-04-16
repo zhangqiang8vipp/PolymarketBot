@@ -1436,19 +1436,7 @@ def _refresh_shares(window_ts: int, bet_usd: float) -> None:
 
         up_ask = _best_ask(up_tok)
         down_ask = _best_ask(down_tok)
-
-        if up_ask and up_ask > 0:
-            shares = bet_usd / up_ask
-            print(
-                f"  📈 Up  真实买入价=${up_ask:.4f}  用${bet_usd:.2f}可买 {shares:.4f} shares",
-                flush=True,
-            )
-        if down_ask and down_ask > 0:
-            shares = bet_usd / down_ask
-            print(
-                f"  📉 Down 真实买入价=${down_ask:.4f}  用${bet_usd:.2f}可买 {shares:.4f} shares",
-                flush=True,
-            )
+        # 静默刷新，不打印中间状态，只在实际下单时打印
     except Exception:
         pass
 
