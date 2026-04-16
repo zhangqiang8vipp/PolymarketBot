@@ -94,9 +94,21 @@ current_window_ts(t=None):
 
 ---
 
-## 5. 开盘价：`window_open_oracle`
+## 5. 开盘价：`window_open_oracle` + BTC/USD 参考价
 
 目标：**Price to beat**（与 Polymarket 页面对齐时优先 RTDS Chainlink）。
+
+### 5.0 BTC/USD 窗口开盘参考价（`window_open_btc_price`）
+
+用于计算窗口内价格偏离百分比（`w_pct`），**必须使用窗口开始时的 BTC/USD 价格**。
+
+**优先级**：
+1. **RTDS tick**：`window_tracker.open_price`（`current_window == window_ts` 时）
+2. **Binance 回退**：`fetch_btc_price()`
+
+打印区分来源：`[窗口开盘价] RTDS tick=$XXXXX.XX` 或 `[窗口开盘价] Binance=$XXXXX.XX (RTDS未就绪)`
+
+### 5.1 Polymarket 概率开盘（`window_open_oracle`）
 
 1. **`feed is None`**：**`fetch_window_open_price_binance(window_ts)`**  
    - **`fetch_klines_1m(BTCUSDT, start_ms=window_ts*1000, end_ms=None, limit=1)`** 的第一根 **`open`**；不足则 **`RuntimeError`**。
@@ -117,19 +129,20 @@ current_window_ts(t=None):
 
 ## 6. 狙击：`snipe_loop`
 
-输入：**`window_open`**（oracle 开盘价）、**`window_close`**（= `close_at` 浮点）、**`mode`**、**`chainlink_feed`**、**`arb_hit`**。
+输入：**`window_open`**（oracle 开盘价）、**`window_close`**（= `close_at` 浮点）、**`mode`**、**`chainlink_feed`**、**`arb_hit`**、**`window_open_btc_price`**、**`up_tid`**、**`down_tid`**、**`client`**、**`dry_run`**、**`state`**。
 
 1. 打印狙击参数：狙击提前秒、现价来源、RTDS 状态、模式最低置信度。
 2. **`min_conf = min_confidence_for_mode(mode)`**：safe **0.45**，aggressive **0.35**，degen **0.0**。
-3. **`while True`**：
+3. **`while True`**（约每2秒一轮）：
    - **`t_left = window_close - now()`**。
    - 若 **`t_left <= 0`**：**`break`** 出循环。
    - 若 **`arb_hit` 已 set**：抛 **`ArbitrageCycleDone`**。
+   - **套利持续监控**：狙击循环期间每轮检查套利（`log_up_down_ask_spread(..., silent=True)`），命中则抛出 `ArbitrageCycleDone`。
    - **K 线获取（每次迭代都尝试，不限 `t_left`）**：调用 **`fetch_history_candles_before_window(window_start_ms, lookback=120)`** — 直接请求窗口前历史数据；若 Binance 返回空（窗口距今 >~2 分钟），回退：拉最近 120 根过滤掉窗口内的。
    - 第一次进入狙击：打印 **`[狙击] → 狙击开始，距收盘 Xs，开始分析（K线已获取/K线获取中）`**。
    - **`px = snipe_current_price`** → **`ticks.append(px)`**。
    - 再检查 **`arb_hit`**。
-   - **`res = analyze(candles, tick_prices=ticks[-120:])`**（K 线未就绪时返回 `_tick_only_decision`）。
+   - **`res = analyze(candles, tick_prices=ticks[-120:], window_open_price=window_open_btc_price)`**（K 线未就绪时返回 `_tick_only_decision`）。
    - 更新 **`best`**：若 `best is None` 或 **`abs(res.score) > abs(best.score)`** 则 **`best = res`**。
    - **尖峰**：若 **`last_score` 非空** 且 **`abs(res.score - last_score) >= SPIKE_JUMP`**：打印 **`[尖峰] Δ=X.X，提前发射`**，**立即 `return res, ticks`**（**不** 检查 `min_conf`）。
    - **置信度达标**：若 **`kline_fetch_done and res.confidence >= min_conf`**：**`return res, ticks`**（K 线未就绪时继续循环，不提前返回）。
@@ -149,20 +162,20 @@ current_window_ts(t=None):
 
 ## 7. 信号与入场价模型
 
-### 7.1 `strategy.analyze(candles, tick_prices, window_open, current_price)`
+### 7.1 `strategy.analyze(candles, tick_prices, window_open_price)`
 
-> ⚠️ **2024 年重大修复**：新版 `analyze()` 不再接收 `window_open/current_price` 参数，
-> 旧版用窗口内价格变动算分（循环论证），已彻底移除。
+> **v2.2 更新**：新版 `analyze()` 新增 `window_open_price` 参数，支持窗口动量信号。
 
-**签名**：`analyze(candles, tick_prices=None, window_open=None, current_price=None)`
+**签名**：`analyze(candles, tick_prices=None, window_open_price=None)`
 - `candles`: 决策点之前的 1m K 线（最老在前，**不含窗口期内 K 线**）
-- `tick_prices`: 实盘 2s 采样数据（回测为空列表）
-- `window_open` / `current_price`: **已废弃，仅为向后兼容 bot.py**，新版本忽略
+- `tick_prices`: 窗口内的实时 tick 价格列表（首价格为窗口起点附近）
+- `window_open_price`: 窗口开始时的 BTC/USD 价格（来自 RTDS tick，最准确）
 
-**TA 信号**（只用历史 `candles` 计算）：
+**TA 信号**：
 
 | 子信号 | 描述 | 权重范围 |
 |--------|------|---------|
+| `_window_momentum` | 窗口内 BTC/USD 实时变动（最重要）| ±4 |
 | `_micro_momentum` | 最近 1 分钟涨跌 | ±2 |
 | `_acceleration` | 动量加速/减速 | ±1.5 |
 | `_ema_cross` | EMA(9) vs EMA(21) | ±1 |
@@ -171,10 +184,15 @@ current_window_ts(t=None):
 | `_trend_strength` | 最近 10 根方向一致性 | ±2 |
 | `_tick_trend` | tick 价格趋势（仅实盘）| ±2 |
 
+**`_window_momentum` 逻辑**：
+- 当窗口内 BTC 价格变动超过 $50 时触发
+- $50 → ±2，$100 → ±4，$200+ → ±4（饱和）
+- 直接反映窗口内实际价格变化，应主导决策
+
 **汇总**：
-- `score = 上述七项之和`（范围约 -13 ~ +13）
+- `score = 上述八项之和`（范围约 -17 ~ +17）
 - `direction = 1 if score >= 0 else -1`
-- `confidence = min(abs(score) / 7.0, 1.0)`（归一化到 0~1）
+- `confidence = min(abs(score) / 8.5, 1.0)`（归一化到 0~1）
 
 **旧版 `_window_delta_weight` 已移除**：旧版用窗口内已发生的 `window_pct` 算分，造成循环论证。
 
