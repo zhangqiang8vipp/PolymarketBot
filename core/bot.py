@@ -1285,6 +1285,9 @@ _settlement_feed_cell: List[Optional[Any]] = [None]
 # --once dry_run 时，worker 结算完毕后 set，供主线程等待
 _settlement_done_evt: Optional[threading.Event] = None
 
+# 跳过第一个窗口（确保 RTDS 缓冲对齐）
+_FIRST_WINDOW_SKIPPED = False
+
 # ── 窗口 Start/Close Price 追踪（demo 逻辑）────────────────────
 # 完全对标 demo：class MarketState { current_window, open_price, valid }
 # 关键：窗口 N 的 close = 窗口 N+1 的第一条 RTDS tick（boundary ±2s 内才算 valid）
@@ -3011,6 +3014,17 @@ def main() -> None:
 
     while True:
         wts = current_window_ts()
+
+        # 跳过第一个窗口，等待新窗口以确保 RTDS 缓冲对齐
+        global _FIRST_WINDOW_SKIPPED
+        if not _FIRST_WINDOW_SKIPPED:
+            _FIRST_WINDOW_SKIPPED = True
+            print(f"[启动] 跳过第一个窗口({window_slug(wts)})，等待RTDS缓冲对齐", flush=True)
+            sleep_s = wts + WINDOW - now() + 0.1
+            if sleep_s > 0:
+                time.sleep(sleep_s)
+            continue
+
         close_at = wts + WINDOW
         t_left = close_at - now()
         if t_left <= 0:
