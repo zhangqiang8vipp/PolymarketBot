@@ -1555,6 +1555,7 @@ def snipe_loop(
     mode: str,
     chainlink_feed: Optional[Any] = None,
     arb_hit: Optional[threading.Event] = None,
+    window_open_btc_price: Optional[float] = None,
 ) -> Tuple[AnalysisResult, List[float]]:
     """
     狙击循环：K 线在循环内持续获取（直到有数据或窗口结束）。
@@ -1620,7 +1621,7 @@ def snipe_loop(
             raise ArbitrageCycleDone
 
         if kline_fetch_done and candles:
-            res = analyze(candles, tick_prices=ticks[-120:])
+            res = analyze(candles, tick_prices=ticks[-120:], window_open_price=window_open_btc_price)
         else:
             res = _tick_only_decision(ticks)
 
@@ -1653,7 +1654,7 @@ def snipe_loop(
     if best is None:
         px = snipe_current_price(chainlink_feed)
         ticks.append(px)
-        best = analyze(candles, tick_prices=ticks) if candles else AnalysisResult(
+        best = analyze(candles, tick_prices=ticks, window_open_price=window_open_btc_price) if candles else AnalysisResult(
             direction=0, score=0.0, confidence=0.0, details={"skip_trade": True}
         )
     if best.confidence < min_conf:
@@ -1848,6 +1849,7 @@ def run_trade_cycle(
             mode,
             chainlink_feed,
             arb_hit=arb_hit_ev,
+            window_open_btc_price=window_open_btc_price,
         )
     except ArbitrageCycleDone:
         book_thread.join(timeout=1.0)

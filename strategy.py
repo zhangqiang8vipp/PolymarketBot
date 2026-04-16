@@ -165,6 +165,46 @@ def _tick_trend(tick_prices: List[float]) -> float:
     return 0.0
 
 
+def _window_momentum(tick_prices: List[float], window_open_price: Optional[float]) -> float:
+    """
+    窗口内实时动量：窗口开始到狙击时刻的价格变动。
+    这是最重要的信号 — 直接反映窗口内实际发生的价格变化。
+    
+    权重 ±4：当窗口内价格变动显著时（如 $100+），应主导决策，
+    覆盖历史K线信号（如窗口前一直涨但窗口内突然暴跌）。
+    
+    tick_prices: 窗口内的实时tick价格列表（首价格为窗口起点附近）。
+    window_open_price: 窗口开始时的BTC价格（可选，如提供则用此计算）。
+    """
+    if len(tick_prices) < 2:
+        return 0.0
+    
+    # 用窗口起点后的第一个tick作为基准
+    window_base = tick_prices[0]
+    current = tick_prices[-1]
+    
+    # 如果提供了window_open_price，优先用它（更准确）
+    if window_open_price is not None and window_open_price > 0:
+        window_base = window_base if window_base > 0 else window_open_price
+    else:
+        # 回退：用tick首值
+        if window_base <= 0:
+            return 0.0
+    
+    # 计算BTC价格变动（绝对值$）
+    btc_change = abs(current - window_base)
+    
+    # 阈值：$50以上认为是显著变动
+    if btc_change < 50:
+        return 0.0
+    
+    # 权重映射：$50→±2，$100→±4，$200→±4（饱和）
+    if current > window_base:
+        return min(4.0, 2.0 + (btc_change - 50) / 50)
+    else:
+        return max(-4.0, -2.0 - (btc_change - 50) / 50)
+
+
 def _trend_strength(candles: List[Candle]) -> float:
     """趋势强度：基于最近 N 根 K 线的方向一致性。"""
     if len(candles) < 10:
@@ -186,16 +226,16 @@ def _trend_strength(candles: List[Candle]) -> float:
 def analyze(
     candles: List[Candle],
     tick_prices: Optional[List[float]] = None,
-    window_open: Optional[float] = None,
+    window_open_price: Optional[float] = None,
     current_price: Optional[float] = None,
 ) -> AnalysisResult:
     """
-    基于历史技术指标预测 5 分钟窗口方向（不含窗口期内数据！）。
+    基于历史技术指标和窗口内实时动量预测 5 分钟窗口方向。
 
     candles: 决策点之前的 1m K 线（oldest first），不应包含窗口期内的 K 线！
-    tick_prices: 实盘时可选的 2s 采样数据（回测为空列表）。
-    window_open / current_price: [已废弃，仅为向后兼容 bot.py]
-        旧版代码用窗口内价格变动算分（含循环论证），新版本忽略这两个参数。
+    tick_prices: 窗口内的实时 tick 价格列表（首价格为窗口起点附近）。
+    window_open_price: 窗口开始时的 BTC 价格（用于计算窗口内实际变动）。
+    current_price: [已废弃，仅为向后兼容]
 
     返回：direction=1(Up)/-1(Down), score（综合评分）, confidence（0~1）
     """
@@ -206,6 +246,10 @@ def analyze(
         return AnalysisResult(1, 0.0, 0.0, {"error": "insufficient_candles"})
 
     score = 0.0
+
+    # ── 窗口内实时动量（最重要：直接反映窗口内实际价格变动）──────────────────
+    wm = _window_momentum(tick_prices, window_open_price)
+    score += wm
 
     # ── 历史 TA 信号（不含窗口期数据）────────────────────────────
     micro = _micro_momentum(candles)
@@ -224,6 +268,7 @@ def analyze(
     score += trend
     score += tick
 
+    details["window_momentum"] = wm
     details["micro_momentum"] = micro
     details["acceleration"] = accel
     details["ema_cross"] = ema
@@ -232,8 +277,9 @@ def analyze(
     details["trend_strength"] = trend
     details["tick_trend"] = tick
 
-    # score 范围约 -13 ~ +13（7 个子信号 × max 权重）
+    # score 范围约 -17 ~ +17（8 个子信号）
+    # 窗口动量 ±4 权重最大，当窗口内价格变动显著时主导决策
     direction = 1 if score >= 0 else -1
-    confidence = min(abs(score) / 7.0, 1.0)  # 归一化到 0~1
+    confidence = min(abs(score) / 8.5, 1.0)  # 归一化到 0~1
 
     return AnalysisResult(direction=direction, score=score, confidence=confidence, details=details)
