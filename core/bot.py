@@ -1358,10 +1358,17 @@ class _WindowTracker:
         - current_window 已是目标窗口 → 不重复处理
         - current_window 与目标窗口不同（切换）→ on_tick 触发窗口结束打印
         Demo 核心：on_tick(price, ts_sec) 的 ts_sec 让它检测到窗口变化，
-                   price 同时是「上一窗口 close」和「新窗口 open」
+                   price 同时是「上一窗口 close」和新窗口 open
         """
         if self.current_window is None:
             aligned = (ts_sec % WINDOW) <= 2
+            # tick 晚于边界太多（如50秒），视为无效开盘价，等待下一窗口
+            if not aligned:
+                print(
+                    f"[窗口追踪] tick边界后={ts_sec % WINDOW}s > 2s，开盘价无效，等待下一窗口",
+                    flush=True,
+                )
+                return
             self.current_window = window_ts
             self.open_price = price
             self.valid = aligned
@@ -1749,6 +1756,7 @@ def run_trade_cycle(
     # Demo 核心：窗口 N+1 的第一条 tick = 窗口 N 的 close = 窗口 N+1 的 open
     first_rtds_tick: Optional[float] = None
     ts_sec_now: int = int(time.time())
+    window_valid = True  # 假设窗口有效
     if chainlink_feed is not None:
         tup = chainlink_feed.open_price_at_boundary(window_ts)
         if tup is not None:
@@ -1758,19 +1766,38 @@ def run_trade_cycle(
             lag_s = (ts_ms - window_ts * 1000) / 1000.0
             aligned = (ts_sec % WINDOW) <= 2
             if _window_tracker.current_window is None:
-                # 首次初始化
-                _window_tracker.current_window = window_ts
-                _window_tracker.open_price = price
-                _window_tracker.valid = aligned
-                print(f"  🎯 开盘(BTC/USD)=${price:.2f}  边界后={lag_s:.2f}s  aligned={aligned}", flush=True)
+                # 首次初始化：tick 晚于边界太多（如>2s），视为无效开盘价
+                if not aligned:
+                    print(f"  ⚠️ 开盘 tick 边界后={lag_s:.2f}s>2s，窗口无效，等待下一窗口", flush=True)
+                    window_valid = False
+                else:
+                    _window_tracker.current_window = window_ts
+                    _window_tracker.open_price = price
+                    _window_tracker.valid = True
+                    print(f"  🎯 开盘(BTC/USD)=${price:.2f}  边界后={lag_s:.2f}s  aligned={aligned}", flush=True)
             else:
                 # 窗口切换：on_tick 检测到 current_window != window，打印上一窗口结果
                 _window_tracker.on_tick(price, ts_sec)
                 _window_tracker.open_price = price  # 重置新窗口 open
+                _window_tracker.valid = aligned
                 print(f"  🎯 开盘(BTC/USD)=${price:.2f}  边界后={lag_s:.2f}s  aligned={aligned}", flush=True)
+                if not aligned:
+                    print(f"  ⚠️ 开盘 tick 边界后={lag_s:.2f}s>2s，窗口无效，等待下一窗口", flush=True)
+                    window_valid = False
         else:
             if _window_tracker.current_window is None:
                 print(f"  ⚠️ 无边界后 RTDS tick（CHAINLINK_OPEN_WAIT_S 内未收到），窗口追踪未初始化", flush=True)
+                window_valid = False
+
+    # 窗口无效时跳过交易
+    if not window_valid:
+        _skip_and_journal(
+            window_ts=window_ts, mode=mode, window_open=window_open, open_how=open_how,
+            up_ask=None, down_ask=None,
+            score=0.0, confidence=0.0, direction=0,
+            reason="窗口无效（RTDS开盘tick晚于边界>2s）",
+        )
+        return
 
     # ── 窗口起点 BTC/USD 参考价（用于后续百分比换算）───────────────────────
     # 优先用 RTDS tick 记录的窗口开盘价，与 Demo 一致
