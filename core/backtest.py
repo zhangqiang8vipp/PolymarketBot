@@ -12,6 +12,8 @@ from typing import Any, List, Optional
 
 import requests
 
+from core.strategy import Candle
+
 # ── Binance API 配置 ────────────────────────────────────────────────────────
 
 BINANCE_REST_BASE = os.environ.get(
@@ -55,12 +57,24 @@ def fetch_btc_spot_price_usdt() -> float:
 OPEN, HIGH, LOW, CLOSE, VOLUME = 1, 2, 3, 4, 5
 
 
+def _to_candle(k: List[Any]) -> Candle:
+    """将 Binance K 线行转换为 Candle 对象。"""
+    return Candle(
+        open_time_ms=int(k[0]),
+        open=float(k[1]),
+        high=float(k[2]),
+        low=float(k[3]),
+        close=float(k[4]),
+        volume=float(k[5]),
+    )
+
+
 def fetch_klines_1m(
     symbol: str = "BTCUSDT",
     start_ms: Optional[int] = None,
     end_ms: Optional[int] = None,
     limit: int = 60,
-) -> List[Any]:
+) -> List[Candle]:
     """
     获取 Binance K 线数据。
 
@@ -71,7 +85,7 @@ def fetch_klines_1m(
         limit: 最大数量 (1-1000)
 
     Returns:
-        K 线列表，每条为 [timestamp, open, high, low, close, volume, ...]
+        K 线列表，每条为 Candle 对象
     """
     params: dict[str, Any] = {"symbol": symbol, "interval": "1m", "limit": limit}
     if start_ms is not None:
@@ -81,7 +95,7 @@ def fetch_klines_1m(
 
     data = _binance_get("klines", params)
     if data:
-        return [[int(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5])] for k in data]
+        return [_to_candle(k) for k in data]
     return []
 
 
@@ -90,7 +104,7 @@ def fetch_klines_1m_ts(
     end_ts: int,
     symbol: str = "BTCUSDT",
     max_rows: int = 1000,
-) -> List[Any]:
+) -> List[Candle]:
     """
     按 Unix 时间戳（秒）获取 K 线。
 
@@ -101,7 +115,7 @@ def fetch_klines_1m_ts(
         max_rows: 最大行数
 
     Returns:
-        K 线列表
+        K 线列表，每条为 Candle 对象
     """
     return fetch_klines_1m(
         symbol=symbol,
@@ -115,7 +129,7 @@ def fetch_klines_range_hours(
     hours: int = 48,
     symbol: str = "BTCUSDT",
     interval: str = "1m",
-) -> List[Any]:
+) -> List[Candle]:
     """
     获取最近 N 小时的 K 线数据。
 
@@ -125,12 +139,12 @@ def fetch_klines_range_hours(
         interval: K 线周期 (1m, 5m, 1h, etc.)
 
     Returns:
-        K 线列表
+        K 线列表，每条为 Candle 对象
     """
     end_ms = int(time.time() * 1000)
     start_ms = end_ms - hours * 3600 * 1000
 
-    all_klines = []
+    all_klines: List[Candle] = []
     current_start = start_ms
 
     while current_start < end_ms:
@@ -138,7 +152,8 @@ def fetch_klines_range_hours(
         if not batch:
             break
         all_klines.extend(batch)
-        current_start = batch[-1][0] + 1
+        # 使用 Candle 对象的 open_time_ms 属性获取时间戳
+        current_start = batch[-1].open_time_ms + 1
 
     return all_klines
 
@@ -149,7 +164,7 @@ def _fetch_klines_batch(
     start_ms: int,
     end_ms: int,
     limit: int = 1000,
-) -> List[Any]:
+) -> List[Candle]:
     """单次获取 K 线批次。"""
     params = {
         "symbol": symbol,
@@ -160,7 +175,7 @@ def _fetch_klines_batch(
     }
     data = _binance_get("klines", params)
     if data:
-        return [[int(k[0]), float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5])] for k in data]
+        return [_to_candle(k) for k in data]
     return []
 
 

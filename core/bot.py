@@ -2434,7 +2434,7 @@ def _reset_all_history() -> None:
     print("=" * 60, flush=True)
 
     # 1. 清除干跑存档
-    dr_path = os.environ.get("DRY_RUN_BANKROLL_FILE", "dry_run_bankroll.json")
+    dr_path = _dry_run_state_path()
     if os.path.exists(dr_path):
         os.remove(dr_path)
         print(f"  ✓ 已删除干跑存档: {dr_path}", flush=True)
@@ -2442,7 +2442,13 @@ def _reset_all_history() -> None:
         print(f"  - 干跑存档不存在: {dr_path}", flush=True)
 
     # 2. 清除交易日志
-    tj_path = os.environ.get("TRADING_JOURNAL_CSV", "trading_journal.csv")
+    if tj is not None:
+        tj_path = tj._journal_path()
+    else:
+        tj_path = os.environ.get(
+            "TRADING_JOURNAL_CSV",
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "trading_journal.csv"),
+        )
     if os.path.exists(tj_path):
         os.remove(tj_path)
         print(f"  ✓ 已删除交易日志: {tj_path}", flush=True)
@@ -2450,7 +2456,7 @@ def _reset_all_history() -> None:
         print(f"  - 交易日志不存在: {tj_path}", flush=True)
 
     # 3. 清除 Excel 交易记录
-    xlsx_path = os.environ.get("BOT_TRADES_XLSX", "bot_trades.xlsx")
+    xlsx_path = _bot_trades_xlsx_path()
     if os.path.exists(xlsx_path):
         os.remove(xlsx_path)
         print(f"  ✓ 已删除 Excel 记录: {xlsx_path}", flush=True)
