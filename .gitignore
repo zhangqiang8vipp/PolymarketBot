@@ -3,7 +3,6 @@
 .env.*
 !.env.example
 dry_run_bankroll.json
-.history/
 
 # Python
 __pycache__/
@@ -16,7 +15,19 @@ venv/
 dist/
 build/
 
+# 数据文件（根据需要调整）
+# trading_journal.csv
+# bot_trades.xlsx
+# *.xlsx
+# *.json
+
 # 工具 / IDE
 .idea/
 .vscode/
 *.log
+.cursor-guard.json
+
+# 临时文件
+_temp/
+_temp*
+*.tmp

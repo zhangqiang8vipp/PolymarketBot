@@ -1,1 +1,0 @@
-fix: window_open_oracle probability and Gamma bid-ask midpoint

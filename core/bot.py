@@ -1,5 +1,5 @@
 """
-Polymarket BTC 5 分钟 Up/Down 狙击机器人（完整逻辑见 TRADING_AND_SYSTEM_LOGIC.md）。
+Polymarket BTC 5 分钟 Up/Down 狙击机器人（完整逻辑见 docs/TRADING_AND_SYSTEM_LOGIC.md）。
 """
 
 from __future__ import annotations
@@ -15,18 +15,18 @@ import sys
 import threading
 import time
 import traceback
-from datetime import datetime
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from dotenv import load_dotenv
 
-from backtest import fetch_btc_spot_price_usdt, fetch_klines_1m
-from strategy import AnalysisResult, Candle, analyze
+from core.backtest import fetch_btc_spot_price_usdt, fetch_klines_1m
+from core.strategy import AnalysisResult, Candle, analyze
 
 try:
-    from chainlink_rtds import ChainlinkBtcUsdRtds
+    from core.chainlink_rtds import ChainlinkBtcUsdRtds
 except ImportError:
     ChainlinkBtcUsdRtds = None  # type: ignore
 
@@ -43,7 +43,7 @@ except ImportError:
     Workbook = None  # type: ignore
 
 try:
-    import trading_journal as tj
+    from core import trading_journal as tj
 except ImportError:
     tj = None  # type: ignore
 
@@ -2425,6 +2425,43 @@ def _dry_run_history_max() -> int:
     return max(50, min(v, 50_000))
 
 
+def _reset_all_history() -> None:
+    """重置所有历史数据：清除 RTDS 缓冲、干跑存档、交易日志。"""
+    import shutil
+
+    print("=" * 60, flush=True)
+    print("⚠️  重置所有历史数据", flush=True)
+    print("=" * 60, flush=True)
+
+    # 1. 清除干跑存档
+    dr_path = os.environ.get("DRY_RUN_BANKROLL_FILE", "dry_run_bankroll.json")
+    if os.path.exists(dr_path):
+        os.remove(dr_path)
+        print(f"  ✓ 已删除干跑存档: {dr_path}", flush=True)
+    else:
+        print(f"  - 干跑存档不存在: {dr_path}", flush=True)
+
+    # 2. 清除交易日志
+    tj_path = os.environ.get("TRADING_JOURNAL_CSV", "trading_journal.csv")
+    if os.path.exists(tj_path):
+        os.remove(tj_path)
+        print(f"  ✓ 已删除交易日志: {tj_path}", flush=True)
+    else:
+        print(f"  - 交易日志不存在: {tj_path}", flush=True)
+
+    # 3. 清除 Excel 交易记录
+    xlsx_path = os.environ.get("BOT_TRADES_XLSX", "bot_trades.xlsx")
+    if os.path.exists(xlsx_path):
+        os.remove(xlsx_path)
+        print(f"  ✓ 已删除 Excel 记录: {xlsx_path}", flush=True)
+    else:
+        print(f"  - Excel 记录不存在: {xlsx_path}", flush=True)
+
+    print("=" * 60, flush=True)
+    print("历史数据已重置，RTDS 缓冲将在重启后自动清空", flush=True)
+    print("=" * 60, flush=True)
+
+
 def _load_dry_run_state(
     default_bankroll: float,
     default_principal: float,
@@ -2871,7 +2908,12 @@ def main() -> None:
     p.add_argument("--dry-run", action="store_true", help="干跑：模拟流程，不下真实单")
     p.add_argument("--once", action="store_true", help="只跑一个交易周期后退出")
     p.add_argument("--max-trades", type=int, default=0, help="最多完成几笔后退出，0 表示不限制")
+    p.add_argument("--reset-history", action="store_true", help="重置所有历史数据：清除 RTDS 缓冲、干跑存档、交易日志")
     args = p.parse_args()
+
+    # 重置历史数据
+    if args.reset_history:
+        _reset_all_history()
 
     starting = float(os.environ.get("STARTING_BANKROLL", "1.0"))
     min_bet = float(os.environ.get("MIN_BET", "1.0"))
