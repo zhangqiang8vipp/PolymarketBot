@@ -916,11 +916,11 @@ def _chainlink_window_open_px(feed: Any, window_ts: int) -> Tuple[Optional[float
     窗口开盘价：直接取窗口边界后第一条 Chainlink tick（你的 WS demo 思路）。
     - 先查缓冲内是否有边界后的 tick（无 lag 过滤）
     - 无则等待 CHAINLINK_OPEN_WAIT_S 秒（默认 60s）
-    - 仍无则用边界前回补（RTDS_OPEN_FALLBACK_MAX_MS 内）
+    - 仍无则返回 None（不边界前回补）
     返回 (BTC/USD 价格或 None, 来源说明)。
     """
     # 1. 缓冲内已有边界后的 tick → 直接用（无 lag 限制）
-    tup = feed.open_price_at_boundary(window_ts)
+    tup = feed.open_price_at_boundary(window_ts, fallback_before=False)
     if tup is not None:
         lag_ms = tup[0] - int(window_ts) * 1000
         lag_s = lag_ms / 1000.0
@@ -933,7 +933,7 @@ def _chainlink_window_open_px(feed: Any, window_ts: int) -> Tuple[Optional[float
     poll_s = 0.5
     while time.time() < deadline:
         time.sleep(min(poll_s, deadline - time.time()))
-        tup = feed.open_price_at_boundary(window_ts)
+        tup = feed.open_price_at_boundary(window_ts, fallback_before=False)
         if tup is not None:
             lag_ms = tup[0] - int(window_ts) * 1000
             lag_s = lag_ms / 1000.0
@@ -941,18 +941,9 @@ def _chainlink_window_open_px(feed: Any, window_ts: int) -> Tuple[Optional[float
             return float(tup[1]), (
                 f"等待 {waited_s:.0f}s 后边界后首条 Chainlink tick（lag={lag_s:.1f}s）"
             )
-    print(
-        f"[开盘价] RTDS：等待 {wait_s}s 内缓冲内无边界后 tick → 尝试边界前回补",
-        flush=True,
-    )
 
-    # 3. 回补：边界前的最近一条
-    fb = feed.open_price_before_boundary_fallback(window_ts)
-    if fb is not None:
-        return float(fb), "边界前回补最近一条 Chainlink tick（RTDS_OPEN_FALLBACK_MAX_MS 内，与严格边界价可能有偏差）"
-
-    # 4. 彻底无数据
-    return None, "RTDS 缓冲内无边界后 tick 且无边界前回补"
+    # 3. 彻底无数据（不边界前回补）
+    return None, "RTDS 缓冲内无边界后 tick"
 
 
 def window_open_oracle(
