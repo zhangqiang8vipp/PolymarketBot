@@ -1762,11 +1762,17 @@ def run_trade_cycle(
                 print(f"  ⚠️ 无边界后 RTDS tick（CHAINLINK_OPEN_WAIT_S 内未收到），窗口追踪未初始化", flush=True)
 
     # ── 窗口起点 BTC/USD 参考价（用于后续百分比换算）───────────────────────
-    # window_open 是概率（0~1），需要窗口起点的 BTC/USD 价格来统一单位
-    try:
-        window_open_btc_price = fetch_btc_price()
-    except Exception:
-        window_open_btc_price = None
+    # 优先用 RTDS tick 记录的窗口开盘价，与 Demo 一致
+    # 只有当 RTDS 未初始化时才用 Binance 回退
+    if _window_tracker.current_window == window_ts and _window_tracker.open_price is not None:
+        window_open_btc_price = _window_tracker.open_price
+        print(f"  [窗口开盘价] RTDS tick=${window_open_btc_price:.2f}", flush=True)
+    else:
+        try:
+            window_open_btc_price = fetch_btc_price()
+            print(f"  [窗口开盘价] Binance=${window_open_btc_price:.2f} (RTDS未就绪)", flush=True)
+        except Exception:
+            window_open_btc_price = None
 
     print(f"[窗口 {window_ts}] slug={slug} | {mode} | {'干跑' if dry_run else '实盘'} | 开盘(概率)={window_open:.4f} | 来源={open_how[:50]}", flush=True)
 

@@ -174,20 +174,18 @@ def _window_momentum(tick_prices: List[float], window_open_price: Optional[float
     覆盖历史K线信号（如窗口前一直涨但窗口内突然暴跌）。
     
     tick_prices: 窗口内的实时tick价格列表（首价格为窗口起点附近）。
-    window_open_price: 窗口开始时的BTC价格（可选，如提供则用此计算）。
+    window_open_price: 窗口开始时的BTC价格（来自RTDS tick，最准确）。
     """
     if len(tick_prices) < 2:
         return 0.0
     
-    # 用窗口起点后的第一个tick作为基准
-    window_base = tick_prices[0]
     current = tick_prices[-1]
     
-    # 如果提供了window_open_price，优先用它（更准确）
+    # 优先用RTDS记录的窗口开盘价（最准确），否则用tick首值
     if window_open_price is not None and window_open_price > 0:
-        window_base = window_base if window_base > 0 else window_open_price
+        window_base = window_open_price
     else:
-        # 回退：用tick首值
+        window_base = tick_prices[0]
         if window_base <= 0:
             return 0.0
     
