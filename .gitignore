@@ -15,11 +15,10 @@ venv/
 dist/
 build/
 
-# 数据文件（根据需要调整）
-# trading_journal.csv
-# bot_trades.xlsx
-# *.xlsx
-# *.json
+# 数据文件
+*.xlsx
+*.csv
+*.json
 
 # 工具 / IDE
 .idea/
@@ -31,3 +30,4 @@ build/
 _temp/
 _temp*
 *.tmp
+backtest_output.txt

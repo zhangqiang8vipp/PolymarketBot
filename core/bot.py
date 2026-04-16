@@ -1310,11 +1310,11 @@ class _WindowTracker:
         """
         每次 RTDS tick 进来时调用。
         price: BTC/USD 价格
-        ts_sec: 时间戳（秒），默认用当前时间
+        ts_sec: tick 时间戳（秒），默认用当前时间
         Demo 逻辑：窗口 N+1 的第一条 tick = 窗口 N 的 close = 窗口 N+1 的 open
         """
-        now_sec = ts_sec if ts_sec is not None else int(time.time())
-        window = now_sec // WINDOW
+        tick_sec = ts_sec if ts_sec is not None else int(time.time())
+        window = tick_sec // WINDOW
 
         if self.current_window != window:
             # ── 新窗口开始了 ─────────────────────────────────────
@@ -1338,7 +1338,8 @@ class _WindowTracker:
                     )
 
             # 初始化新窗口
-            aligned = (now_sec % WINDOW) <= 2  # 边界±2s内启动才完整
+            now_sec = int(time.time())
+            aligned = (now_sec % WINDOW) <= 2  # 用当前墙钟判断是否边界启动
             self.current_window = window
             self.open_price = price
             self.valid = aligned
@@ -1361,11 +1362,13 @@ class _WindowTracker:
                    price 同时是「上一窗口 close」和新窗口 open
         """
         if self.current_window is None:
-            aligned = (ts_sec % WINDOW) <= 2
+            # 用墙钟判断是否边界启动（与 Demo 一致）
+            now_sec = int(time.time())
+            aligned = (now_sec % WINDOW) <= 2
             # tick 晚于边界太多（如50秒），视为无效开盘价，等待下一窗口
             if not aligned:
                 print(
-                    f"[窗口追踪] tick边界后={ts_sec % WINDOW}s > 2s，开盘价无效，等待下一窗口",
+                    f"[窗口追踪] tick边界后={ts_sec % WINDOW}s，开盘价无效，等待下一窗口",
                     flush=True,
                 )
                 return
