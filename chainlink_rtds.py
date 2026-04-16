@@ -404,6 +404,14 @@ class ChainlinkBtcUsdRtds:
             _ts, val = max(self._ticks, key=lambda x: x[0])
             return float(val)
 
+    def latest_tick(self) -> Optional[Tuple[int, float]]:
+        """Most recent Chainlink btc/usd tick as (ts_ms, price)."""
+        with self._lock:
+            if not self._ticks:
+                return None
+            _ts, val = max(self._ticks, key=lambda x: x[0])
+            return (_ts, float(val))
+
     def earliest_tick_at_or_after(self, boundary_unix_s: int) -> Optional[Tuple[int, float]]:
         """≥ 边界的最早一条 (ts_ms, value)；不做滞后校验，供诊断或自定义逻辑。"""
         target_ms = int(boundary_unix_s) * 1000

@@ -788,11 +788,11 @@ def snipe_current_price(chainlink_feed: Optional[Any]) -> float:
         return fetch_btc_price()
     if chainlink_feed is not None:
         try:
-            px = chainlink_feed.latest_price()
-            if px is not None:
-                px = float(px)
-                _window_tracker.on_tick(px)
-                return px
+            tick = chainlink_feed.latest_tick()
+            if tick is not None:
+                ts_ms, px = tick
+                _window_tracker.on_tick(float(px), ts_sec=ts_ms // 1000)
+                return float(px)
         except Exception:
             pass
     return fetch_btc_price()
@@ -1295,6 +1295,13 @@ class _WindowTracker:
         self.current_window: Optional[int] = None  # 当前窗口 ts
         self.open_price: Optional[float] = None    # 当前窗口开盘价(BTC/USD)
         self.valid: bool = False                 # 当前窗口是否完整（边界±2s内启动）
+
+    def reset_on_reconnect(self) -> None:
+        """RTDS 重连时重置状态，Demo 重连后从新窗口重新开始。"""
+        self.current_window = None
+        self.open_price = None
+        self.valid = False
+        print("[窗口追踪] RTDS 重连，已重置窗口状态", flush=True)
 
     def on_tick(self, price: float, ts_sec: Optional[int] = None) -> None:
         """
@@ -2914,8 +2921,14 @@ def main() -> None:
     if use_rtds and ChainlinkBtcUsdRtds is not None:
         try:
             dbg = os.environ.get("RTDS_DEBUG")
+
+            def _on_rtds_status(msg: str) -> None:
+                print(f"RTDS 状态: {msg}", flush=True)
+                if "重连" in msg or "reconnect" in msg.lower():
+                    _window_tracker.reset_on_reconnect()
+
             chainlink_feed = ChainlinkBtcUsdRtds(
-                on_status=(lambda m: print(f"RTDS 状态: {m}")) if dbg else None,
+                on_status=_on_rtds_status,
             )
             chainlink_feed.start()
             time.sleep(float(os.environ.get("RTDS_WARMUP_S", "1.5")))
