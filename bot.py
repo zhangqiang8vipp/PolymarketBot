@@ -1544,6 +1544,11 @@ def snipe_loop(
     chainlink_feed: Optional[Any] = None,
     arb_hit: Optional[threading.Event] = None,
     window_open_btc_price: Optional[float] = None,
+    up_tid: Optional[str] = None,
+    down_tid: Optional[str] = None,
+    client: Optional[Any] = None,
+    dry_run: bool = False,
+    state: Optional[Any] = None,
 ) -> Tuple[AnalysisResult, List[float]]:
     """
     狙击循环：K 线在循环内持续获取（直到有数据或窗口结束）。
@@ -1569,12 +1574,20 @@ def snipe_loop(
 
     snipe_armed = False
     low_conf_streak = 0  # 连续低置信计数
+    _arb_poll_s = 2.0  # 狙击循环期间每2秒检查一次套利
     while True:
         t_left = deadline - now()
         if t_left <= 0:
             break
         if arb_hit is not None and arb_hit.is_set():
             raise ArbitrageCycleDone
+
+        # ── 套利监控（狙击循环期间持续检查）───────────────────
+        if up_tid and down_tid and client is not None and state is not None:
+            if log_up_down_ask_spread(
+                window_ts, up_tid, down_tid, client, dry_run, state, silent=True
+            ):
+                raise ArbitrageCycleDone
 
         if not kline_fetch_done:
             # K 线获取：只要窗口未收盘就持续尝试（成功一次即止）
@@ -1844,6 +1857,11 @@ def run_trade_cycle(
             chainlink_feed,
             arb_hit=arb_hit_ev,
             window_open_btc_price=window_open_btc_price,
+            up_tid=up_tid,
+            down_tid=down_tid,
+            client=client,
+            dry_run=dry_run,
+            state=state,
         )
     except ArbitrageCycleDone:
         book_thread.join(timeout=1.0)
